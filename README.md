@@ -222,6 +222,7 @@ docker run --rm -e REDISCLI_AUTH -v "$PWD/AmazonRootCA1.pem:/ca.pem:ro" valkey/v
 | kubectl `x509: certificate is valid for …, not localhost` | `--tls-server-name` is missing: redo step 3b. |
 | kubectl `Unauthorized` / `the server has asked for the client to provide credentials` | Your IAM identity has no EKS access entry, or `AWS_PROFILE` differs from the one used for `update-kubeconfig`. |
 | kubectl hangs or `connection refused` on 8443 | The tunnel isn't running, timed out, or its connection dropped (the tunnel terminal shows `broken pipe` but the process keeps running and accepting connections). Stop it with `Ctrl-C` and redo step 3a. |
+| Tunnel opens but every connection logs `Connection to destination port failed` | Abandoned sessions (closed laptops, killed terminals) stay open on the bastion and break new port forwards. List and end your sessions, then reopen the tunnel: `aws ssm describe-sessions --state Active --query 'Sessions[].SessionId' --output text \| xargs -n1 aws ssm terminate-session --session-id` |
 | valkey-cli `certificate verify failed` | That `valkey-cli` has no CA bundle (the official container image doesn't ship one): pass `--cacert AmazonRootCA1.pem`. |
 | psql `server certificate does not match host name` | Use `host=<real endpoint> hostaddr=127.0.0.1`, not `host=localhost`. |
 | Everything worked yesterday, nothing works today | The environment was destroyed between sessions. Apply it again, then repeat step 3b (new cluster endpoint). |
