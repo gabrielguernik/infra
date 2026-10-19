@@ -228,6 +228,10 @@ resource "aws_db_instance" "this" {
   storage_type          = "gp3"
   storage_encrypted     = true
 
+  # Pinned: the API image trusts exactly this CA's root (Prisma reads a single CA certificate).
+  # Rotating it means rebuilding the image with the new root first.
+  ca_cert_identifier = "rds-ca-rsa2048-g1"
+
   db_subnet_group_name   = aws_db_subnet_group.this.name
   vpc_security_group_ids = [aws_security_group.store["db"].id]
   publicly_accessible    = false
