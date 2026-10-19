@@ -1,0 +1,17 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      Sid    = "AccountSettings"
+      Effect = "Allow"
+      Action = [
+        "iam:ListAccountAliases",
+        "iam:CreateAccountAlias",
+        "iam:DeleteAccountAlias",
+        "s3:GetAccountPublicAccessBlock",
+        "s3:PutAccountPublicAccessBlock",
+      ]
+      Resource = "*"
+    },
+  ]
+})}

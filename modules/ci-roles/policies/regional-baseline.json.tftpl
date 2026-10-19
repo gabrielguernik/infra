@@ -1,0 +1,16 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      Sid    = "EbsDefaults"
+      Effect = "Allow"
+      Action = [
+        "ec2:GetEbsEncryptionByDefault",
+        "ec2:EnableEbsEncryptionByDefault",
+        "ec2:DisableEbsEncryptionByDefault",
+        "ec2:GetEbsDefaultKmsKeyId",
+      ]
+      Resource = "*"
+    },
+  ]
+})}

@@ -1,0 +1,34 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      Sid      = "Route53Read"
+      Effect   = "Allow"
+      Action   = ["route53:Get*", "route53:List*"]
+      Resource = "*"
+    },
+    {
+      # The parent zone is imported, never created or deleted by CI.
+      Sid      = "ParentZoneMetadata"
+      Effect   = "Allow"
+      Action   = ["route53:ChangeTagsForResource", "route53:UpdateHostedZoneComment"]
+      Resource = "arn:aws:route53:::hostedzone/${parent_zone_id}"
+    },
+    {
+      # Route 53 Domains has no resource-level permissions.
+      Sid    = "RegisteredDomain"
+      Effect = "Allow"
+      Action = [
+        "route53domains:Get*",
+        "route53domains:List*",
+        "route53domains:UpdateDomainNameservers",
+        "route53domains:EnableDomainAutoRenew",
+        "route53domains:DisableDomainAutoRenew",
+        "route53domains:UpdateDomainContactPrivacy",
+        "route53domains:UpdateTagsForDomain",
+        "route53domains:DeleteTagsForDomain",
+      ]
+      Resource = "*"
+    },
+  ]
+})}

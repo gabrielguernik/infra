@@ -1,0 +1,26 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      # VPC, subnets, routes, NAT, endpoints, security groups and flow logs are all EC2 APIs
+      # without useful resource-level scoping at create time.
+      Sid      = "Ec2Networking"
+      Effect   = "Allow"
+      Action   = ["ec2:*"]
+      Resource = "*"
+    },
+    {
+      Sid      = "NoInstances"
+      Effect   = "Deny"
+      Action   = ["ec2:RunInstances", "ec2:StartInstances", "ec2:RequestSpotInstances", "ec2:CreateFleet"]
+      Resource = "*"
+    },
+    {
+      # Flow logs delivered to S3.
+      Sid      = "FlowLogDelivery"
+      Effect   = "Allow"
+      Action   = ["logs:CreateLogDelivery", "logs:DeleteLogDelivery"]
+      Resource = "*"
+    },
+  ]
+})}
