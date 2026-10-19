@@ -20,10 +20,7 @@ ${jsonencode({
         "ecr:PutImage",
         "ecr:DescribeImages",
       ]
-      Resource = [
-        "arn:aws:ecr:${region}:${account_id}:repository/realworld-api",
-        "arn:aws:ecr:${region}:${account_id}:repository/realworld-frontend",
-      ]
+      Resource = "arn:aws:ecr:${region}:${account_id}:repository/realworld-api"
     },
   ]
 })}

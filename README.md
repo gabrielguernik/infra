@@ -14,9 +14,10 @@ live/      one folder per stack instance; backend, provider, module calls, SSM r
   shared/_global/shared-global
   shared/us-east-1/shared-regional
   envs/sandbox/_global/dns
-  envs/sandbox/us-east-1/{network,edge}
+  envs/sandbox/us-east-1/{network,bastion,edge,eks,data}
   envs/prod/...   stub tfvars showing the prod toggles; never applied
 docs/      cidr-plan.md
+scripts/   tunnel.sh: SSM port forwarding through the bastion
 ```
 
 ## Stack catalogue
@@ -25,12 +26,15 @@ docs/      cidr-plan.md
 |---|---|---|---|
 | bootstrap | `accounts/sandbox/_global/bootstrap` | State bucket, GitHub OIDC provider, CI roles | — |
 | shared-global | `shared/_global/shared-global` | Parent zone `gg-incode.click` (imported), registrar name servers | — |
-| shared-regional | `shared/us-east-1/shared-regional` | ECR repos, log archive bucket | — |
+| shared-regional | `shared/us-east-1/shared-regional` | ECR repo `realworld-api`, log archive bucket | — |
 | account-baseline | `accounts/sandbox/_global/account-baseline` | Account alias, S3 account-level Block Public Access | — |
 | regional-baseline | `accounts/sandbox/us-east-1/regional-baseline` | EBS encryption by default | — |
 | dns | `envs/sandbox/_global/dns` | `sandbox.gg-incode.click` zone + delegation | shared-global |
 | network | `envs/sandbox/us-east-1/network` | VPC, subnets, NAT, S3 gateway + interface endpoints, `sg-vpce`, flow logs | shared-regional |
+| bastion | `envs/sandbox/us-east-1/bastion` | Session Manager bastion (t3.micro, no inbound, no keys), `sg-bastion` | network |
 | edge | `envs/sandbox/us-east-1/edge` | Wildcard ACM certificate, `sg-alb`, optional WAF | dns, network |
+| eks | `envs/sandbox/us-east-1/eks` | EKS 1.36 (private endpoint only), 2 × t3.medium system nodes, IRSA, add-ons, `sg-app` | network (+ `sg-alb`, `sg-bastion` by tag) |
+| data | `envs/sandbox/us-east-1/data` | RDS PostgreSQL 18, ElastiCache Valkey 8.1, app secrets, `sg-db`, `sg-cache` | network (+ `sg-app`, `sg-bastion` by tag) |
 
 Every stack publishes its outputs under `/<env>/<region>/<stack>/<name>` (`env` is `account`, `shared` or the environment; `region` is `_global` for global stacks).
 List them with:
@@ -61,18 +65,172 @@ Each provider sets `allowed_account_ids`, so a stack refuses to run against any 
 5. `live/accounts/sandbox/us-east-1/regional-baseline`
 6. `live/envs/sandbox/_global/dns`
 7. `live/envs/sandbox/us-east-1/network`
-8. `live/envs/sandbox/us-east-1/edge`
+8. `live/envs/sandbox/us-east-1/bastion`
+9. `live/envs/sandbox/us-east-1/edge`
+10. `live/envs/sandbox/us-east-1/eks`
+11. `live/envs/sandbox/us-east-1/data`
 
 ### Destroy order (environment, between work sessions)
 
 ```bash
-terraform -chdir=live/envs/sandbox/us-east-1/edge destroy
-terraform -chdir=live/envs/sandbox/us-east-1/network destroy
+for s in data eks edge bastion network; do
+  terraform -chdir=live/envs/sandbox/us-east-1/$s destroy || break
+done
 ```
 
+The order matters: `data` holds rules that reference `sg-app` and `sg-bastion`, and `eks` references `sg-alb` and `sg-bastion`,
+so each must go before the stack owning the referenced group.
+
 `dns` and everything above it stay up: they cost almost nothing, and keeping them keeps delegation stable.
-Destroying network removes the NAT gateway (about $35/month) and the interface endpoints (5 services × 3 AZs, about
-$110/month), the main running costs of Phase 1.
+Approximate running cost of the environment stacks: EKS control plane $73, interface endpoints (5 services × 3 AZs) $110,
+2 × t3.medium nodes $65, NAT gateway $35, RDS db.t3.micro $15, Valkey cache.t3.micro $12, bastion t3.micro $8. That is about
+$320/month, nearly all of it removed by the destroy above.
+
+## Connecting to the environment
+
+Nothing in the environment is reachable from the internet except the ALB. The Kubernetes API, PostgreSQL and Valkey are
+reached through a **Session Manager bastion**: a `t3.micro` in a private subnet with no inbound rules, no public IP and no
+SSH keys. Session Manager forwards a local port through the bastion to the target. Access is granted by IAM and every
+session is recorded in Session Manager's history.
+
+```
+laptop:8443  ──SSM──▶ bastion ──▶ EKS private endpoint :443
+laptop:15432 ──SSM──▶ bastion ──▶ RDS PostgreSQL     :5432
+laptop:16379 ──SSM──▶ bastion ──▶ ElastiCache Valkey :6379
+```
+
+### 1. Prerequisites (once)
+
+1. **AWS CLI v2:** `aws --version` shows `aws-cli/2.x`.
+2. **Session Manager plugin:**
+   ```bash
+   brew install --cask session-manager-plugin     # macOS; other OS: see the AWS docs "Install the Session Manager plugin"
+   session-manager-plugin --version
+   ```
+3. **kubectl** within one minor version of the cluster (1.36): `kubectl version --client`.
+4. Optional, for the data tier: `psql` (`brew install libpq`), `valkey-cli` (`brew install valkey`) and `jq`.
+5. **Credentials for account 965140467182.** Your identity needs:
+   - `ssm:StartSession` on the bastion with the `AWS-StartPortForwardingSessionToRemoteHost` document;
+   - `ssm:GetParameter` on `/sandbox/*`;
+   - `eks:DescribeCluster`;
+   - an EKS access entry, for kubectl;
+   - `secretsmanager:GetSecretValue` on the database and app secrets, for psql and valkey-cli.
+
+### 2. Check your identity and that the environment is up
+
+```bash
+aws sts get-caller-identity --query Account --output text      # must print 965140467182
+export AWS_REGION=us-east-1
+
+BASTION_ID=$(aws ssm get-parameter --name /sandbox/us-east-1/bastion/instance_id --query Parameter.Value --output text)
+aws ssm describe-instance-information \
+  --filters Key=InstanceIds,Values="$BASTION_ID" \
+  --query 'InstanceInformationList[0].PingStatus' --output text   # must print Online
+```
+
+If the parameter doesn't exist, the environment is destroyed: apply `network` → `bastion` → `edge` → `eks` → `data` first.
+If the status isn't `Online`, see Troubleshooting.
+
+### 3. Kubernetes API
+
+**3a. Open the tunnel.** It runs in the foreground, so use a dedicated terminal:
+
+```bash
+./scripts/tunnel.sh eks
+# equivalent to:
+EKS_HOST=$(aws ssm get-parameter --name /sandbox/us-east-1/eks/cluster_endpoint --query Parameter.Value --output text | sed 's#^https://##')
+aws ssm start-session --target "$BASTION_ID" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "host=$EKS_HOST,portNumber=443,localPortNumber=8443"
+```
+
+Wait for `Waiting for connections...`.
+
+**3b. Configure kubectl** (once per cluster rebuild), in another terminal:
+
+```bash
+export AWS_REGION=us-east-1
+EKS_HOST=$(aws ssm get-parameter --name /sandbox/us-east-1/eks/cluster_endpoint --query Parameter.Value --output text | sed 's#^https://##')
+
+aws eks update-kubeconfig --name sandbox-us-east-1 --alias sandbox
+CLUSTER_ARN=$(aws eks describe-cluster --name sandbox-us-east-1 --query cluster.arn --output text)
+# Send traffic to the local tunnel, but keep checking the certificate against the real endpoint name:
+kubectl config set-cluster "$CLUSTER_ARN" --server=https://localhost:8443 --tls-server-name="$EKS_HOST"
+```
+
+**3c. Test:**
+
+```bash
+kubectl --context sandbox get nodes        # 2 Ready t3.medium nodes
+```
+
+Stop the tunnel with `Ctrl-C`. Sessions also end after 20 minutes idle; just run step 3a again.
+
+### 4. PostgreSQL (debugging)
+
+```bash
+./scripts/tunnel.sh db                      # terminal 1: localhost:15432 → RDS :5432
+```
+
+```bash
+# terminal 2
+export AWS_REGION=us-east-1
+DB_HOST=$(aws ssm get-parameter --name /sandbox/us-east-1/data/db_endpoint --query Parameter.Value --output text)
+SECRET_ARN=$(aws ssm get-parameter --name /sandbox/us-east-1/data/db_master_secret_arn --query Parameter.Value --output text)
+export PGUSER=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text | jq -r .username)
+export PGPASSWORD=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text | jq -r .password)
+curl -sO https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem
+
+# host = real name (checked against the certificate); hostaddr = the tunnel
+psql "host=$DB_HOST hostaddr=127.0.0.1 port=15432 dbname=realworld sslmode=verify-full sslrootcert=us-east-1-bundle.pem" -c 'select version();'
+unset PGPASSWORD
+```
+
+### 5. Valkey (debugging)
+
+```bash
+./scripts/tunnel.sh cache                   # terminal 1: localhost:16379 → Valkey :6379
+```
+
+```bash
+# terminal 2
+CACHE_HOST=$(aws ssm get-parameter --name /sandbox/us-east-1/data/cache_endpoint --query Parameter.Value --output text)
+APP_SECRET_ARN=$(aws ssm get-parameter --name /sandbox/us-east-1/data/app_secret_arn --query Parameter.Value --output text)
+export REDISCLI_AUTH=$(aws secretsmanager get-secret-value --secret-id "$APP_SECRET_ARN" --query SecretString --output text | jq -r .REDIS_AUTH_TOKEN)
+curl -sO https://www.amazontrust.com/repository/AmazonRootCA1.pem   # ElastiCache certificates chain to Amazon Root CA 1
+
+valkey-cli --tls --cacert AmazonRootCA1.pem --sni "$CACHE_HOST" -h 127.0.0.1 -p 16379 PING     # PONG
+unset REDISCLI_AUTH
+```
+
+No local `valkey-cli`? Use the container image. Docker Desktop and Rancher Desktop reach the tunnel as `host.docker.internal`:
+
+```bash
+docker run --rm -e REDISCLI_AUTH -v "$PWD/AmazonRootCA1.pem:/ca.pem:ro" valkey/valkey:8.1 \
+  valkey-cli --tls --cacert /ca.pem --sni "$CACHE_HOST" -h host.docker.internal -p 16379 PING
+```
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `TargetNotConnected` / status not `Online` | The bastion is stopped, just booted (wait about 2 minutes) or has no route to SSM. Check the NAT gateway exists (`network` applied) and the instance is running. |
+| Status `ConnectionLost` minutes after launch, instance `running` | The organization's Amazon Inspector associations install agents on every new instance. On a `t3.nano` that exhausts memory and CPU credits and the SSM agent stops reporting, which is why the bastion is a `t3.micro`. A stop/start (or a resize) brings it back. |
+| `SessionManagerPlugin is not found` | Install the plugin (step 1.2) and open a new shell. |
+| `AccessDeniedException` on `StartSession` | Your identity lacks `ssm:StartSession` for this instance or document. |
+| `bind: address already in use` | Another tunnel is using the port: `lsof -i :8443` and stop it, or pass another local port. |
+| kubectl `x509: certificate is valid for …, not localhost` | `--tls-server-name` is missing: redo step 3b. |
+| kubectl `Unauthorized` / `the server has asked for the client to provide credentials` | Your IAM identity has no EKS access entry, or `AWS_PROFILE` differs from the one used for `update-kubeconfig`. |
+| kubectl hangs or `connection refused` on 8443 | The tunnel isn't running, timed out, or its connection dropped (the tunnel terminal shows `broken pipe` but the process keeps running and accepting connections). Stop it with `Ctrl-C` and redo step 3a. |
+| valkey-cli `certificate verify failed` | That `valkey-cli` has no CA bundle (the official container image doesn't ship one): pass `--cacert AmazonRootCA1.pem`. |
+| psql `server certificate does not match host name` | Use `host=<real endpoint> hostaddr=127.0.0.1`, not `host=localhost`. |
+| Everything worked yesterday, nothing works today | The environment was destroyed between sessions. Apply it again, then repeat step 3b (new cluster endpoint). |
+
+### Security notes
+
+- The bastion has no inbound security group rules, no public IP and no SSH key. The only way in is Session Manager, authorized by IAM.
+- Allowed sessions are restricted to the port-forwarding document, so no interactive shell is available.
+- Database and cache credentials come from Secrets Manager into environment variables for one command, and are never written to disk.
 
 ## Setup from zero
 
@@ -104,10 +262,14 @@ GitHub Actions authenticates through OIDC. There are no long-lived keys.
 | Role | Trusted subjects | Can do |
 |---|---|---|
 | `ci/tf-<stack>` | `repo:gabrielguernik/infra` on `main` and pull requests | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl` |
-| `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the two ECR repos |
+| `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the `realworld-api` ECR repo |
 
-Notable scoping: `tf-dns` can only write the `sandbox.gg-incode.click` NS record in the parent zone, and `tf-edge` only
-`_*.sandbox.gg-incode.click` CNAMEs (certificate validation).
+Notable scoping:
+- `tf-dns` can only write the `sandbox.gg-incode.click` NS record in the parent zone.
+- `tf-edge` can only write `_*.sandbox.gg-incode.click` CNAMEs (certificate validation).
+- `tf-network` is denied launching instances; `tf-bastion` can only launch instances tagged `Stack=bastion`.
+- `tf-eks` manages IAM only under the `/eks/` path, `tf-bastion` only under `/bastion/`.
+- `tf-data` reaches only `sandbox/realworld/*` and RDS-managed `rds!*` secrets.
 
 ## Module sources
 
@@ -148,7 +310,20 @@ roughly halves storage cost. Add it together with an `object_size_greater_than` 
 - **Detection:** GuardDuty and Security Hub, enabled organization-wide from a delegated administrator account.
 - **WAF:** the edge module already supports a web ACL (`enable_waf`); turn it on for prod.
 
-## Known gaps (Phase 1)
+## Rules for cluster add-ons (IMDS)
+
+Nodes require IMDSv2 with a **hop limit of 1**, so pods cannot reach the instance metadata service and cannot use the
+node role. Pods get AWS credentials only through IRSA. Add-ons that would discover settings from IMDS get them explicitly:
+
+| Component | Explicit setting |
+|---|---|
+| AWS Load Balancer Controller | Helm `region` and `vpcId` |
+| ExternalDNS, External Secrets, Fluent Bit, Karpenter | `AWS_REGION` (injected by the IRSA webhook) plus region in each tool's config |
+| EBS CSI driver | none: falls back to Kubernetes node labels |
+
+Fallback, if a component still needs IMDS: `imds_hop_limit = 2` in the eks module. Every pod could then use the node role.
+
+## Known gaps
 
 - Single NAT gateway (toggle in `network/terraform.tfvars`, prod value in the prod stub).
 - No CloudTrail trail managed here (see Future considerations).

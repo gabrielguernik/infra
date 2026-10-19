@@ -3,9 +3,14 @@
 
 locals {
   state_bucket_name = "tfstate-${var.account_id}-${var.region}"
+  # GitHub's immutable OIDC subjects (default for new repos): owner and repo carry their numeric IDs, so a
+  # deleted-and-recreated repo with the same name cannot inherit this trust.
+  infra_prefix = "repo:${var.github_owner}@${var.github_owner_id}/${var.infra_repo.name}@${var.infra_repo.id}"
+  app_prefix   = "repo:${var.github_owner}@${var.github_owner_id}/${var.app_repo.name}@${var.app_repo.id}"
+
   infra_subjects = [
-    "repo:${var.github_owner}/${var.infra_repo}:ref:refs/heads/main",
-    "repo:${var.github_owner}/${var.infra_repo}:pull_request",
+    "${local.infra_prefix}:ref:refs/heads/main",
+    "${local.infra_prefix}:pull_request",
   ]
 
   tf_roles = {
@@ -20,7 +25,7 @@ locals {
 
   build_roles = {
     "ci-build" = {
-      github_subjects   = ["repo:${var.github_owner}/${var.app_repo}:ref:refs/heads/main"]
+      github_subjects   = ["${local.app_prefix}:ref:refs/heads/main"]
       policy_template   = "ci-build"
       state_prefix      = null
       ssm_write_prefix  = null

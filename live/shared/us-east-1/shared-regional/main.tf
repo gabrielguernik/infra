@@ -1,7 +1,7 @@
 module "ecr" {
   source = "../../../../modules/ecr-repos"
 
-  repositories     = ["realworld-api", "realworld-frontend"]
+  repositories     = ["realworld-api"]
   pull_account_ids = [var.account_id]
 }
 
@@ -16,9 +16,8 @@ module "outputs" {
 
   prefix = "/shared/${var.region}/shared-regional"
   values = {
-    ecr_api_url      = module.ecr.repository_urls["realworld-api"]
-    ecr_frontend_url = module.ecr.repository_urls["realworld-frontend"]
-    log_bucket_name  = module.log_archive.bucket_name
-    log_bucket_arn   = module.log_archive.bucket_arn
+    ecr_api_url     = module.ecr.repository_urls["realworld-api"]
+    log_bucket_name = module.log_archive.bucket_name
+    log_bucket_arn  = module.log_archive.bucket_arn
   }
 }

@@ -13,14 +13,25 @@ variable "github_owner" {
   type        = string
 }
 
-variable "infra_repo" {
-  description = "Repo holding the Terraform code."
+variable "github_owner_id" {
+  description = "Numeric ID of the GitHub owner (gh api users/<owner> --jq .id); part of immutable OIDC subjects."
   type        = string
 }
 
+variable "infra_repo" {
+  description = "Repo holding the Terraform code: name and numeric ID (gh api repos/<owner>/<name> --jq .id)."
+  type = object({
+    name = string
+    id   = string
+  })
+}
+
 variable "app_repo" {
-  description = "Repo holding the application; its CI pushes images."
-  type        = string
+  description = "Repo holding the application, whose CI pushes images: name and numeric ID."
+  type = object({
+    name = string
+    id   = string
+  })
 }
 
 variable "parent_domain" {

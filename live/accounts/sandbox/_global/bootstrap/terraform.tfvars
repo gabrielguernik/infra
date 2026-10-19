@@ -1,13 +1,14 @@
-account_id     = "965140467182"
-region         = "us-east-1"
-github_owner   = "gabrielguernik"
-infra_repo     = "infra"
-app_repo       = "realworld-app"
-parent_domain  = "gg-incode.click"
-parent_zone_id = "Z0129084A5AOP8NVXZQO"
-env            = "sandbox"
+account_id      = "965140467182"
+region          = "us-east-1"
+github_owner    = "gabrielguernik"
+github_owner_id = "35024789"
+infra_repo      = { name = "infra", id = "1425953183" }
+app_repo        = { name = "realworld-app", id = "1425953552" }
+parent_domain   = "gg-incode.click"
+parent_zone_id  = "Z0129084A5AOP8NVXZQO"
+env             = "sandbox"
 
-# eks, data and platform are added in Phases 2-3.
+# platform is added in Phase 3.
 stacks = {
   shared-global = {
     state_prefix     = "shared/_global/shared-global"
@@ -35,9 +36,24 @@ stacks = {
     ssm_write_prefix  = "/sandbox/us-east-1/network"
     ssm_read_prefixes = ["/shared/us-east-1/shared-regional"]
   }
+  bastion = {
+    state_prefix      = "envs/sandbox/us-east-1/bastion"
+    ssm_write_prefix  = "/sandbox/us-east-1/bastion"
+    ssm_read_prefixes = ["/sandbox/us-east-1/network"]
+  }
   edge = {
     state_prefix      = "envs/sandbox/us-east-1/edge"
     ssm_write_prefix  = "/sandbox/us-east-1/edge"
     ssm_read_prefixes = ["/sandbox/_global/dns", "/sandbox/us-east-1/network"]
+  }
+  eks = {
+    state_prefix      = "envs/sandbox/us-east-1/eks"
+    ssm_write_prefix  = "/sandbox/us-east-1/eks"
+    ssm_read_prefixes = ["/sandbox/us-east-1/network"]
+  }
+  data = {
+    state_prefix      = "envs/sandbox/us-east-1/data"
+    ssm_write_prefix  = "/sandbox/us-east-1/data"
+    ssm_read_prefixes = ["/sandbox/us-east-1/network"]
   }
 }

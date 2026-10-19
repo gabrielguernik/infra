@@ -1,0 +1,103 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      Sid      = "Eks"
+      Effect   = "Allow"
+      Action   = ["eks:*"]
+      Resource = "*"
+    },
+    {
+      # Security groups (sg-app and rules on the cluster SG) and the node launch template.
+      Sid    = "Ec2"
+      Effect = "Allow"
+      Action = [
+        "ec2:Describe*",
+        "ec2:CreateSecurityGroup",
+        "ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:ModifySecurityGroupRules",
+        "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:CreateLaunchTemplate",
+        "ec2:CreateLaunchTemplateVersion",
+        "ec2:ModifyLaunchTemplate",
+        "ec2:DeleteLaunchTemplate",
+        "ec2:DeleteLaunchTemplateVersions",
+        "ec2:GetLaunchTemplateData",
+      ]
+      Resource = "*"
+    },
+    {
+      Sid    = "OwnRolesAndPolicies"
+      Effect = "Allow"
+      Action = ["iam:*"]
+      Resource = [
+        "arn:aws:iam::${account_id}:role/eks/*",
+        "arn:aws:iam::${account_id}:policy/eks/*",
+        "arn:aws:iam::${account_id}:instance-profile/eks/*",
+      ]
+    },
+    {
+      Sid       = "PassOwnRoles"
+      Effect    = "Allow"
+      Action    = ["iam:PassRole"]
+      Resource  = "arn:aws:iam::${account_id}:role/eks/*"
+      Condition = { StringEquals = { "iam:PassedToService" = ["eks.amazonaws.com", "ec2.amazonaws.com"] } }
+    },
+    {
+      Sid    = "ClusterOidcProvider"
+      Effect = "Allow"
+      Action = [
+        "iam:CreateOpenIDConnectProvider",
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:GetOpenIDConnectProvider",
+        "iam:TagOpenIDConnectProvider",
+        "iam:UntagOpenIDConnectProvider",
+        "iam:UpdateOpenIDConnectProviderThumbprint",
+        "iam:AddClientIDToOpenIDConnectProvider",
+      ]
+      Resource = "arn:aws:iam::${account_id}:oidc-provider/oidc.eks.${region}.amazonaws.com/*"
+    },
+    {
+      Sid      = "ServiceLinkedRoles"
+      Effect   = "Allow"
+      Action   = ["iam:CreateServiceLinkedRole"]
+      Resource = "*"
+      Condition = { StringEquals = { "iam:AWSServiceName" = [
+        "eks.amazonaws.com",
+        "eks-nodegroup.amazonaws.com",
+        "autoscaling.amazonaws.com",
+      ] } }
+    },
+    {
+      Sid      = "IamRead"
+      Effect   = "Allow"
+      Action   = ["iam:GetRole", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListOpenIDConnectProviders"]
+      Resource = "*"
+    },
+    {
+      Sid      = "ControlPlaneLogs"
+      Effect   = "Allow"
+      Action   = ["logs:*"]
+      Resource = "arn:aws:logs:${region}:${account_id}:log-group:/aws/eks/*"
+    },
+    {
+      Sid      = "LogsDescribe"
+      Effect   = "Allow"
+      Action   = ["logs:DescribeLogGroups"]
+      Resource = "*"
+    },
+    {
+      Sid      = "AmiLookup"
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+      Resource = "arn:aws:ssm:${region}::parameter/aws/service/eks/*"
+    },
+  ]
+})}
