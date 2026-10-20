@@ -14,7 +14,7 @@ live/      one folder per stack instance; backend, provider, module calls, SSM r
   shared/_global/shared-global
   shared/us-east-1/shared-regional
   envs/sandbox/_global/dns
-  envs/sandbox/us-east-1/{network,bastion,edge,eks,data,platform}
+  envs/sandbox/us-east-1/{network,bastion,edge,eks,data,monitoring,platform}
   envs/prod/...   stub tfvars showing the prod toggles; never applied
 docs/      cidr-plan.md
 scripts/   tunnel.sh: SSM port forwarding through the bastion
@@ -35,7 +35,8 @@ scripts/   tunnel.sh: SSM port forwarding through the bastion
 | edge | `envs/sandbox/us-east-1/edge` | Wildcard ACM certificate, `sg-alb`, optional WAF | dns, network |
 | eks | `envs/sandbox/us-east-1/eks` | EKS 1.36 (private endpoint only), 2 × t3.medium system nodes, IRSA, add-ons, `sg-app` | network (+ `sg-alb`, `sg-bastion` by tag) |
 | data | `envs/sandbox/us-east-1/data` | RDS PostgreSQL 18, ElastiCache Valkey 8.1, app secrets, credentials for the DB roles `realworld_app` and `realworld_migrator`, `sg-db`, `sg-cache` | network (+ `sg-app`, `sg-bastion` by tag) |
-| platform | `envs/sandbox/us-east-1/platform` | IRSA roles with fixed names for the in-cluster controllers (IAM only; no Kubernetes or Helm providers) | dns, eks, data |
+| monitoring | `envs/sandbox/us-east-1/monitoring` | Amazon Managed Prometheus workspace and its alert rules (module `prometheus-alerts`), container log group `/eks/<cluster>/containers`, saved Logs Insights queries, Grafana admin secret | — |
+| platform | `envs/sandbox/us-east-1/platform` | IRSA roles with fixed names for the in-cluster components (IAM only; no Kubernetes or Helm providers) | dns, eks, data, monitoring |
 
 Every stack publishes its outputs under `/<env>/<region>/<stack>/<name>` (`env` is `account`, `shared` or the environment; `region` is `_global` for global stacks).
 List them with:
@@ -70,8 +71,12 @@ Each provider sets `allowed_account_ids`, so a stack refuses to run against any 
 9. `live/envs/sandbox/us-east-1/edge`
 10. `live/envs/sandbox/us-east-1/eks`
 11. `live/envs/sandbox/us-east-1/data`
-12. `live/envs/sandbox/us-east-1/platform`
-13. ArgoCD: run the `argocd` workflow in [gitops](https://github.com/gabrielguernik/gitops) (Actions → argocd → Run workflow). It installs ArgoCD through the bastion, and ArgoCD deploys everything else in the cluster from that repo.
+12. `live/envs/sandbox/us-east-1/monitoring`
+13. `live/envs/sandbox/us-east-1/platform`
+14. **If `monitoring` was recreated:** the AMP workspace has a new ID. Put it in gitops `clusters/<cluster>/platform/alloy.yaml`
+    and `grafana.yaml` (`aws ssm get-parameter --name /sandbox/us-east-1/monitoring/amp_workspace_id`); the gitops checks fail
+    until they match.
+15. ArgoCD: run the `argocd` workflow in [gitops](https://github.com/gabrielguernik/gitops) (Actions → argocd → Run workflow). It installs ArgoCD through the bastion, and ArgoCD deploys everything else in the cluster from that repo.
 
 No stack talks to the Kubernetes API: Terraform stops at AWS resources, so every stack can be planned without the tunnel.
 
@@ -92,18 +97,20 @@ kill "$TUNNEL_PID"
 Then, from this repo:
 
 ```bash
-for s in platform data eks edge bastion network; do
+for s in platform monitoring data eks edge bastion network; do
   terraform -chdir=live/envs/sandbox/us-east-1/$s destroy || break
 done
 ```
 
 The order matters: `data` holds rules that reference `sg-app` and `sg-bastion`, and `eks` references `sg-alb` and `sg-bastion`,
-so each must go before the stack owning the referenced group.
+so each must go before the stack owning the referenced group. Destroying `monitoring` deletes the metrics history (AMP
+workspace) and the container logs.
 
 `dns` and everything above it stay up: they cost almost nothing, and keeping them keeps delegation stable.
 Approximate running cost of the environment stacks: EKS control plane $73, interface endpoints (5 services × 3 AZs) $110,
-2 × t3.medium nodes $65, NAT gateway $35, ALB $20, RDS db.t3.micro $15, Valkey cache.t3.micro $12, bastion t3.micro $8. That is
-about $340/month, nearly all of it removed by the destroy above.
+2 × t3.medium nodes $65, NAT gateway $35, ALB $20, RDS db.t3.micro $15, Valkey cache.t3.micro $12, bastion t3.micro $8,
+Amazon Managed Prometheus ingestion $10–20, CloudWatch Logs and API calls about $5. That is about $355–365/month, nearly all
+of it removed by the destroy above.
 
 ## Connecting to the environment
 
@@ -260,6 +267,107 @@ docker run --rm -e REDISCLI_AUTH -v "$PWD/AmazonRootCA1.pem:/ca.pem:ro" valkey/v
 - Database and cache credentials come from Secrets Manager into environment variables for one command, and are never written to disk.
 - The gitops pipeline's role `ci/argocd-<cluster>` can only start port-forwarding sessions on the bastion, end its own sessions, describe the cluster, and read the ArgoCD deploy keys. It is cluster-admin inside Kubernetes (installing ArgoCD creates CRDs and cluster roles), and only jobs in the cluster's GitHub environment can assume it.
 
+## Observability
+
+| Signal | Collected by | Stored in | Where to look |
+|---|---|---|---|
+| API metrics (`/metrics`: latency histogram by route, cache hits, Prisma pool, process) | Grafana Alloy, scraping pods annotated `prometheus.io/scrape` | Amazon Managed Prometheus (AMP) workspace `sandbox-us-east-1` | Grafana → Apps → RealWorld API |
+| API load balancer requests and 5xx (what users see) | Alloy's CloudWatch exporter, every minute | AMP | RealWorld API dashboard, top row; the error alert |
+| ALB, RDS, Valkey, NAT metrics | CloudWatch | CloudWatch | Grafana → AWS → AWS dependencies |
+| Container logs (JSON fields such as `reqId`, `res.statusCode` and `responseTime` are queryable) | Fluent Bit | CloudWatch Logs `/eks/sandbox-us-east-1/containers`, 30 days, one stream per `<namespace>.<pod>` | Logs Insights saved queries `sandbox-us-east-1/*`; dashboard log panels |
+| EKS control plane, PostgreSQL logs | EKS, RDS | `/aws/eks/sandbox-us-east-1/cluster`, `/aws/rds/instance/sandbox-us-east-1-postgres/postgresql` | Logs Insights |
+| VPC flow logs, ALB access logs | VPC, ALB | Log archive bucket | Athena or download |
+| Top SQL and waits | Performance Insights | RDS | RDS console |
+
+Grafana, Alloy and Fluent Bit run in the cluster and are deployed by ArgoCD from gitops (`clusters/<cluster>/platform/`).
+The AMP workspace, the log group, the saved queries and the alert rules are in the `monitoring` stack.
+
+### Alerts
+
+Two alerts on the API, evaluated by AMP. The rules are a plain Prometheus rules file,
+`modules/prometheus-alerts/rules/realworld.yaml`; each file in that folder becomes a rule group namespace. Change a rule,
+then apply `monitoring`.
+
+| Alert | Fires when | Measured at |
+|---|---|---|
+| `RealworldHighErrorRate` | More than 5% of requests get a 5xx for 5 minutes, with more than 30 requests in 5 minutes | The load balancer: when no pod is ready, the ALB answers 503 itself and the app never sees the request |
+| `RealworldHighLatency` | p95 of user requests above 500 ms for 10 minutes | The app's latency histogram, excluding probes, `/metrics` and unmatched paths |
+
+**Alerts aren't delivered anywhere** (see "Production" below). Firing alerts show in Grafana (Alerting → Alert rules,
+data source "Amazon Managed Prometheus") and in the workspace's `api/v1/alerts`.
+
+### Open Grafana
+
+From the gitops repo (Grafana is private, like the ArgoCD UI):
+
+```bash
+eval "$(scripts/eks-tunnel.sh sandbox us-east-1)"
+kubectl -n monitoring port-forward svc/grafana 3000:80 &
+aws secretsmanager get-secret-value --secret-id sandbox/monitoring/grafana --query SecretString --output text | jq -r '."admin-password"'
+open http://localhost:3000                                 # user admin
+```
+
+Dashboards come from gitops (`charts/grafana-dashboards`), and Grafana has no persistence, so changes made in the UI are
+lost on restart. To change a dashboard, export its JSON into the chart.
+
+### 3am runbook
+
+1. **The alert.** Which one, since when. Errors (`RealworldHighErrorRate`) or latency (`RealworldHighLatency`)?
+2. **Grafana → RealWorld API dashboard, top row.** Compare the two 5xx ratios:
+   - **ALB high, API low or no API traffic:** requests aren't reaching the pods. Usually no pod is ready. Check
+     `kubectl -n realworld get pods` and the dashboard panel "Readiness failures", which gives the reason from the
+     `not ready: database check failed` log lines.
+   - **API high too:** the API itself fails. "Errors/s by route and status" shows which routes, and "Latest 5xx" gives
+     their `reqId`s.
+3. **Latency.** Check "p95 latency by route" for the slow routes, and "Queries waiting for a connection" for DB pool
+   saturation. Then check pod CPU and event loop lag: a CPU-bound pod makes every request wait.
+4. **Recent changes.** `kubectl -n argocd get applications` and the gitops history. If a deploy lines up with the start,
+   revert its gitops commit (realworld-app README, "Rollback").
+5. **One request end to end.** Run Logs Insights → saved query `sandbox-us-east-1/Request by reqId`, with the `reqId` in
+   place of `REPLACE_WITH_REQ_ID`. Clients get the ID back in the `X-Request-Id` response header.
+6. **Dependencies.** On the AWS dependencies dashboard:
+   - ALB 5xx vs target 5xx, and healthy hosts;
+   - RDS CPU, connections and latency, then Performance Insights for top SQL;
+   - Valkey memory and evictions. A cold cache sends every read to PostgreSQL; the API dashboard shows the hit ratio per cache.
+   - NAT port allocation errors.
+7. **Cluster.** `kubectl get events -n realworld --sort-by=.lastTimestamp`, `kubectl describe pod`, and the logs of the
+   platform components, all in the same log group (stream `<namespace>.<pod>`).
+
+### Verified with injected faults (2026-10-20)
+
+| Fault | Result |
+|---|---|
+| A NetworkPolicy cuts the API pods off from PostgreSQL, under about 2 req/s of traffic | Pods unready in seconds; the ALB answers 503. `RealworldHighErrorRate` went pending after 3.5 min and fired after 8.6 min ("100% of requests fail with 5xx at the load balancer"). The runbook led to the cause: ALB 5xx but no API traffic, then "not ready: database check failed: timeout after 1000ms" from both pods. After the policy was deleted, the pods were ready in 21 s, and the alert resolved after 8.5 min (5-minute window plus CloudWatch's 1–2 minute delay). |
+| An in-cluster k6 load test (300 virtual users on article and tag reads, 15 min) | p95 rose to about 600 ms. `RealworldHighLatency` went pending 5 min into the load and fired 10 min later ("p95 latency is 508.5ms"). The runbook pinned the cause on the API pods, not the database: `/api/tags` and `/api/articles` were slow, both pods were CPU-bound at about 0.92 cores (Node runs one thread) with about 430 ms of event-loop lag, and up to 183 queries waited per pod, while RDS CPU peaked at 14%. The fix is more pods, which is HPA in Phase 5. k6 itself measured p95 857 ms with 0 errors; the app's histogram reads lower because it starts timing only after the event loop picks up a request. |
+
+The first run showed two gaps, both fixed:
+- **The error alert first used the app's own metrics,** which never see the ALB's 503s, so a total outage would have gone unnoticed.
+- **Readiness failures weren't logged.** The probe is excluded from the access log, so nothing said why pods were unready.
+
+### Production
+
+The sandbox keeps observability small on purpose. A production setup adds:
+- **Grafana in a separate management cluster** (or Amazon Managed Grafana), so a cluster that goes down can still be observed.
+- **Alert delivery.** It is not implemented here. Production adds an AMP alert manager definition that routes to SNS and on to
+  a centralized alert management service such as PagerDuty (on-call schedules, escalation, deduplication), plus an
+  always-firing "dead man's switch" alert that proves the delivery path works.
+- **Platform alerts.** Only the two API alerts exist here. Production adds alerts for:
+  - node pressure, pod crash loops and OOM kills;
+  - ArgoCD applications out of sync or degraded;
+  - ExternalSecrets not syncing; certificates close to expiry;
+  - RDS CPU, storage and connections; Valkey memory and evictions;
+  - SLO burn-rate alerts instead of fixed thresholds.
+- **Platform metrics.** node-exporter, kube-state-metrics, cAdvisor, ArgoCD, the controllers and postgres-exporter, scraped
+  by the same Alloy into the same workspace.
+- **Logs in a centralized log system such as Loki** (shipped by Alloy), shared by all clusters and linked to metrics in
+  Grafana, instead of CloudWatch Logs.
+- **An easier way to manage dashboards.** Today a change means editing in the UI, exporting the JSON, committing it,
+  tagging a chart version and bumping each cluster, and dashboard JSON is hard to review. Options:
+  - the Grafana Operator, with dashboards, folders and data sources as Kubernetes resources;
+  - dashboards written as code (Grafonnet/Jsonnet or the Grafana Foundation SDK), so reviews are readable;
+  - a central Grafana that syncs UI edits back to Git.
+- **Tracing** with OpenTelemetry to Tempo or X-Ray.
+
 ## Setup from zero
 
 1. **Domain.** Register it in Route 53 Domains (us-east-1 API). Registration creates a hosted zone; put its ID in
@@ -292,7 +400,7 @@ GitHub Actions authenticates through OIDC. There are no long-lived keys.
 | `ci/tf-<stack>` | `repo:gabrielguernik/infra` on `main` and pull requests | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl` |
 | `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the `realworld-api` ECR repo |
 | `ci/argocd-<cluster>` | `repo:gabrielguernik/gitops`, GitHub environment `<cluster>` only | Port forwarding through the bastion to the cluster API, `eks:DescribeCluster`, read `<env>/argocd/*` secrets; cluster-admin access entry in `eks` |
-| `ci/gitops-check` | `repo:gabrielguernik/gitops` on `main` and pull requests | Read-only: describe the VPCs, security groups, IRSA roles, secret metadata, RDS instances and certificates that gitops references |
+| `ci/gitops-check` | `repo:gabrielguernik/gitops` on `main` and pull requests | Read-only: describe the VPCs, security groups, IRSA roles, secret metadata, RDS instances, certificates, AMP workspaces and log groups that gitops references |
 
 Subjects use GitHub's immutable form, `repo:<owner>@<owner-id>/<repo>@<repo-id>:...`, so a deleted and recreated repo with
 the same name can't inherit the trust. A job that uses a GitHub environment gets the subject `...:environment:<name>`
@@ -305,6 +413,8 @@ Notable scoping:
 - `tf-eks` manages IAM only under the `/eks/` path, `tf-bastion` only under `/bastion/`.
 - `tf-data` reaches only `sandbox/realworld/*` and RDS-managed `rds!*` secrets.
 - `tf-platform` manages IAM roles only under the `/irsa/` path.
+- `tf-monitoring` reaches only log groups under `/eks/<cluster>/` and secrets under `sandbox/monitoring/`; AMP has no
+  name-based ARNs, so its AMP actions are scoped to the account and region.
 
 The ArgoCD deploy keys (`<env>/argocd/repo-<repo>` in Secrets Manager) are created by hand, outside Terraform, so the
 private keys never land in state.
@@ -356,7 +466,7 @@ node role. Pods get AWS credentials only through IRSA. Add-ons that would discov
 | Component | Explicit setting |
 |---|---|
 | AWS Load Balancer Controller | Helm `region` and `vpcTags` (the VPC by its `Name` tag, so a rebuild needs no change) |
-| ExternalDNS, External Secrets, Fluent Bit, Karpenter | `AWS_REGION` (injected by the IRSA webhook) plus region in each tool's config |
+| ExternalDNS, External Secrets, Fluent Bit, Alloy, Grafana, Karpenter | `AWS_REGION` (injected by the IRSA webhook) plus region in each tool's config |
 | EBS CSI driver | none: falls back to Kubernetes node labels |
 
 Fallback, if a component still needs IMDS: `imds_hop_limit = 2` in the eks module. Every pod could then use the node role.
@@ -371,5 +481,8 @@ Fallback, if a component still needs IMDS: `imds_hop_limit = 2` in the eks modul
 - One account and one region stand in for a multi-account, multi-region organization.
 - The `realworld_app` and `realworld_migrator` passwords are not rotated automatically. Prod: Secrets Manager rotation
   with alternating users; Reloader already rolls the pods when their Secret changes.
+- Observability has no alert delivery, no platform alerts or metrics, and Grafana in the same cluster it watches
+  (see "Observability" → "Production"). The AMP workspace ID is hardcoded in gitops, so recreating the `monitoring` stack
+  needs a gitops commit.
 - The vendored Load Balancer Controller IAM policy is the upstream one; it allows security group rule changes the
   controller never makes here (`enableBackendSecurityGroup: false`, `manage-backend-security-group-rules: "false"`).

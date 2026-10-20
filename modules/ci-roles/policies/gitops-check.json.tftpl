@@ -10,6 +10,8 @@ ${jsonencode({
         "rds:DescribeDBInstances",
         "acm:ListCertificates",
         "secretsmanager:ListSecrets",
+        "aps:ListWorkspaces",
+        "logs:DescribeLogGroups",
       ]
       Resource = "*"
     },
@@ -20,11 +22,20 @@ ${jsonencode({
       Resource = "arn:aws:iam::${account_id}:role/irsa/*"
     },
     {
+      Sid      = "PrometheusWorkspaces"
+      Effect   = "Allow"
+      Action   = ["aps:DescribeWorkspace"]
+      Resource = "arn:aws:aps:${region}:${account_id}:workspace/*"
+    },
+    {
       # Metadata only: DescribeSecret never returns the value.
       Sid      = "SecretMetadata"
       Effect   = "Allow"
       Action   = ["secretsmanager:DescribeSecret"]
-      Resource = "arn:aws:secretsmanager:${region}:${account_id}:secret:*/realworld/*"
+      Resource = [
+        "arn:aws:secretsmanager:${region}:${account_id}:secret:*/realworld/*",
+        "arn:aws:secretsmanager:${region}:${account_id}:secret:*/monitoring/*",
+      ]
     },
   ]
 })}

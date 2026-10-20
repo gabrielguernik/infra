@@ -19,6 +19,14 @@ data "aws_ssm_parameter" "db_instance_arn" {
   name = "/${var.env}/${var.region}/data/db_instance_arn"
 }
 
+data "aws_ssm_parameter" "amp_workspace_arn" {
+  name = "/${var.env}/${var.region}/monitoring/amp_workspace_arn"
+}
+
+data "aws_ssm_parameter" "log_group_arn" {
+  name = "/${var.env}/${var.region}/monitoring/log_group_arn"
+}
+
 module "platform" {
   source = "../../../../../modules/platform"
 
@@ -28,6 +36,8 @@ module "platform" {
   oidc_issuer       = nonsensitive(data.aws_ssm_parameter.oidc_issuer.value)
   zone_id           = nonsensitive(data.aws_ssm_parameter.zone_id.value)
   db_instance_arn   = nonsensitive(data.aws_ssm_parameter.db_instance_arn.value)
+  amp_workspace_arn = nonsensitive(data.aws_ssm_parameter.amp_workspace_arn.value)
+  log_group_arn     = nonsensitive(data.aws_ssm_parameter.log_group_arn.value)
 }
 
 module "outputs" {

@@ -1,0 +1,62 @@
+# RealWorld API alerts.
+# - Errors are measured at the load balancer (CloudWatch metrics that Grafana Alloy copies into AMP), because that is
+#   what users see: when no pod is ready the ALB answers 503 itself and the app never sees the request.
+# - Latency is measured by the app (realworld-app src/app/metrics.ts): renaming http_request_duration_seconds or its
+#   labels means updating this rule. Probe and /metrics requests are excluded: they aren't user traffic.
+#
+# Only symptom alerts for the API live here. Platform alerts (nodes, pods, ArgoCD, RDS, certificates, ...) are a
+# production addition; see the infra README, "Observability".
+groups:
+  - name: realworld-api
+    rules:
+      - alert: RealworldHighErrorRate
+        # More than 5% of requests to the API's load balancer answered with a 5xx, by the ALB itself (no ready pod,
+        # timeouts) or by the API, while there is real traffic (> 30 requests in 5 minutes), so an idle API with one
+        # failed request doesn't page. ALB-generated 5xx aren't part of RequestCount, so they're added to the total.
+        # The series are per-minute CloudWatch sums (job integrations/cloudwatch), hence sum_over_time.
+        expr: |
+          (
+            sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m]))
+            + sum(sum_over_time(aws_applicationelb_httpcode_target_5_xx_count_sum[5m]))
+          )
+          /
+          (
+            sum(sum_over_time(aws_applicationelb_request_count_sum[5m]))
+            + sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m]))
+          ) > 0.05
+          and
+          (
+            sum(sum_over_time(aws_applicationelb_request_count_sum[5m]))
+            + sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m]))
+          ) > 30
+        for: 5m
+        labels:
+          severity: page
+          service: realworld-api
+        annotations:
+          summary: "RealWorld API: {{ $value | humanizePercentage }} of requests fail with 5xx at the load balancer"
+          description: >-
+            More than 5% of requests to the API's load balancer returned a 5xx over the last 5 minutes. On the
+            RealWorld API dashboard, compare the ALB and API 5xx ratios: ALB-only errors mean no pod is ready (check
+            readiness and the "not ready" log lines), API errors lead to the failing routes and their request IDs.
+          runbook_url: "https://github.com/gabrielguernik/infra#3am-runbook"
+
+      - alert: RealworldHighLatency
+        # p95 over user requests to matched routes. Unmatched paths (404s), probes and /metrics are excluded: they're
+        # never slow and would dilute it.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{service="realworld-api", route!~"unmatched|/healthz|/readyz|/metrics"}[5m]))
+          ) > 0.5
+          and
+          sum(rate(http_request_duration_seconds_count{service="realworld-api", route!~"unmatched|/healthz|/readyz|/metrics"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: page
+          service: realworld-api
+        annotations:
+          summary: "RealWorld API: p95 latency is {{ $value | humanizeDuration }}"
+          description: >-
+            The API's p95 latency has been above 500 ms for 10 minutes. Open the RealWorld API dashboard for the slow
+            routes and DB pool waits, then the AWS dependencies dashboard (RDS CPU, Valkey hit ratio).
+          runbook_url: "https://github.com/gabrielguernik/infra#3am-runbook"

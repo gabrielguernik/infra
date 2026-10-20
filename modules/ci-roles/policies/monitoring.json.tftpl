@@ -1,0 +1,48 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      # The workspace and its rule group namespaces. AMP has no name-based ARNs (workspace IDs are generated),
+      # so this is scoped to the account and region.
+      Sid    = "PrometheusWorkspace"
+      Effect = "Allow"
+      Action = [
+        "aps:CreateWorkspace",
+        "aps:DeleteWorkspace",
+        "aps:DescribeWorkspace",
+        "aps:DescribeWorkspaceConfiguration",
+        "aps:UpdateWorkspaceAlias",
+        "aps:ListWorkspaces",
+        "aps:CreateRuleGroupsNamespace",
+        "aps:PutRuleGroupsNamespace",
+        "aps:DeleteRuleGroupsNamespace",
+        "aps:DescribeRuleGroupsNamespace",
+        "aps:ListRuleGroupsNamespaces",
+        "aps:DescribeLoggingConfiguration",
+        "aps:TagResource",
+        "aps:UntagResource",
+        "aps:ListTagsForResource",
+      ]
+      Resource = "arn:aws:aps:${region}:${account_id}:*"
+    },
+    {
+      Sid      = "ContainerLogGroup"
+      Effect   = "Allow"
+      Action   = ["logs:*"]
+      Resource = "arn:aws:logs:${region}:${account_id}:log-group:/eks/${cluster_name}/*"
+    },
+    {
+      # Query definitions and DescribeLogGroups have no resource-level permissions.
+      Sid      = "LogsUnscoped"
+      Effect   = "Allow"
+      Action   = ["logs:DescribeLogGroups", "logs:PutQueryDefinition", "logs:DescribeQueryDefinitions", "logs:DeleteQueryDefinition"]
+      Resource = "*"
+    },
+    {
+      Sid      = "MonitoringSecrets"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:*"]
+      Resource = "arn:aws:secretsmanager:${region}:${account_id}:secret:${env}/monitoring/*"
+    },
+  ]
+})}

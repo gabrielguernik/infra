@@ -44,6 +44,16 @@ variable "db_instance_arn" {
   type        = string
 }
 
+variable "amp_workspace_arn" {
+  description = "Amazon Managed Prometheus workspace that Alloy writes to and Grafana reads from."
+  type        = string
+}
+
+variable "log_group_arn" {
+  description = "Container log group (monitoring stack) that Fluent Bit writes to and Grafana queries."
+  type        = string
+}
+
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
@@ -52,6 +62,8 @@ locals {
 
   # Secrets Manager appends a random 6-character suffix to secret ARNs.
   role_secrets = ["${local.secret_arn_prefix}/db-app-??????", "${local.secret_arn_prefix}/db-migrator-??????"]
+
+  log_group_arn = trimsuffix(var.log_group_arn, ":*")
 
   roles = {
     aws-load-balancer-controller = {
@@ -125,6 +137,103 @@ locals {
             Resource = "*"
           },
         ]
+      })
+    }
+
+    # --- Observability -------------------------------------------------------------------------------------------
+
+    # Grafana Alloy scrapes the app's /metrics, reads the API load balancer's metrics from CloudWatch (user-facing
+    # errors, including the 503s the ALB answers itself when no pod is ready), and remote-writes both to AMP.
+    alloy = {
+      service_account = "monitoring:alloy"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Sid      = "RemoteWrite"
+            Effect   = "Allow"
+            Action   = ["aps:RemoteWrite"]
+            Resource = var.amp_workspace_arn
+          },
+          {
+            # CloudWatch metrics and the tagging API (resource discovery by tag) have no resource-level permissions.
+            # The exporter also labels metrics with the account alias.
+            Sid      = "ReadCloudWatchMetrics"
+            Effect   = "Allow"
+            Action   = ["cloudwatch:GetMetricData", "cloudwatch:ListMetrics", "tag:GetResources", "iam:ListAccountAliases"]
+            Resource = "*"
+          },
+        ]
+      })
+    }
+
+    # Grafana: read-only on AMP (including AMP's rules and alerts), CloudWatch metrics and the container logs.
+    grafana = {
+      service_account = "monitoring:grafana"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Sid      = "QueryPrometheus"
+            Effect   = "Allow"
+            Action   = ["aps:QueryMetrics", "aps:GetSeries", "aps:GetLabels", "aps:GetMetricMetadata", "aps:ListRules", "aps:ListAlerts"]
+            Resource = var.amp_workspace_arn
+          },
+          {
+            # CloudWatch metrics have no resource-level permissions.
+            Sid      = "ReadCloudWatchMetrics"
+            Effect   = "Allow"
+            Action   = ["cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmsForMetric", "cloudwatch:GetInsightRuleReport"]
+            Resource = "*"
+          },
+          {
+            Sid      = "QueryContainerLogs"
+            Effect   = "Allow"
+            Action   = ["logs:StartQuery", "logs:GetLogEvents", "logs:GetLogGroupFields", "logs:FilterLogEvents"]
+            Resource = [local.log_group_arn, "${local.log_group_arn}:*"]
+          },
+          {
+            Sid      = "LogsUnscoped"
+            Effect   = "Allow"
+            Action   = ["logs:DescribeLogGroups", "logs:GetQueryResults", "logs:StopQuery", "logs:DescribeQueries"]
+            Resource = "*"
+          },
+          {
+            # Used by the CloudWatch data source to list resources and regions in its query editor.
+            Sid      = "Discovery"
+            Effect   = "Allow"
+            Action   = ["tag:GetResources", "ec2:DescribeRegions", "ec2:DescribeInstances", "ec2:DescribeTags"]
+            Resource = "*"
+          },
+        ]
+      })
+    }
+
+    # Fluent Bit writes container logs to the one Terraform-owned log group; it can't create groups.
+    fluent-bit = {
+      service_account = "logging:fluent-bit"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [{
+          Sid      = "WriteContainerLogs"
+          Effect   = "Allow"
+          Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
+          Resource = [local.log_group_arn, "${local.log_group_arn}:*"]
+        }]
+      })
+    }
+
+    # The monitoring namespace's secrets: Grafana's admin credentials.
+    secrets-monitoring = {
+      service_account = "monitoring:secrets-reader"
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [{
+          Sid      = "MonitoringSecrets"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+          Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.env}/monitoring/*"
+        }]
       })
     }
   }
