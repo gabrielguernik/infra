@@ -29,12 +29,15 @@ assume() {
   local role="$1" token creds
   # Local dry runs: TF_CI_SKIP_ASSUME=1 uses the current credentials instead.
   if [[ -n "${TF_CI_SKIP_ASSUME:-}" ]]; then echo "TF_CI_SKIP_ASSUME: not assuming ci/${role}"; return 0; fi
-  token="$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?no OIDC token: the job needs id-token: write}" \
-    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value)"
+  # Explicit checks: callers use `if ! assume ...`, where set -e doesn't apply.
+  [[ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]] || { echo "no GitHub OIDC token: the job needs permission id-token: write"; return 1; }
+  token="$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -er .value)" || { echo "could not get a GitHub OIDC token"; return 1; }
   creds="$(env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN aws sts assume-role-with-web-identity \
     --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/ci/${role}" \
     --role-session-name "gh-${GITHUB_RUN_ID:-local}-${role}" \
-    --web-identity-token "$token" --duration-seconds 3600 --query Credentials --output json)"
+    --web-identity-token "$token" --duration-seconds 3600 --query Credentials --output json 2>&1)" \
+    || { echo "could not assume ci/${role}: ${creds}"; return 1; }
   AWS_ACCESS_KEY_ID="$(jq -r .AccessKeyId <<<"$creds")"
   AWS_SECRET_ACCESS_KEY="$(jq -r .SecretAccessKey <<<"$creds")"
   AWS_SESSION_TOKEN="$(jq -r .SessionToken <<<"$creds")"
@@ -70,8 +73,16 @@ cmd_plan() {
   local stack="$1" mode="$2" dir out rc=0
   dir="$(stack_dir "$stack")"
   out="$OUT/$stack"; mkdir -p "$out"
-  assume "tf-${stack}-plan"
-  log "init $stack"; init "$dir"; endlog
+  # Failed until proven otherwise, so the PR comment and reports show a failure at any step.
+  echo "failed" >"$out/status"; echo "plan failed (see the run log)" >"$out/summary.txt"
+  echo '{"resources":[],"outputs":[]}' >"$out/changes.json"
+  if ! assume "tf-${stack}-plan" >"$out/plan.txt" 2>&1; then
+    cat "$out/plan.txt"; echo "::error title=$stack::$(tail -1 "$out/plan.txt")"; return 1
+  fi
+  cat "$out/plan.txt"
+  log "init $stack"
+  if ! init "$dir" >"$out/plan.txt" 2>&1; then endlog; cat "$out/plan.txt"; echo "::error title=$stack::terraform init failed"; return 1; fi
+  endlog
 
   if [[ "$mode" == drift ]] && [[ -z "$(terraform -chdir="$dir" state list 2>/dev/null)" ]]; then
     echo "not-deployed" >"$out/status"; echo "not deployed (empty state)" >"$out/summary.txt"; : >"$out/plan.txt"
@@ -104,7 +115,7 @@ cmd_apply() {
   dir="$(stack_dir "$stack")"
   out="$OUT/apply/$stack"; mkdir -p "$out"
   [[ -f "$reviewed" ]] || { echo "::error title=$stack::no reviewed plan for $stack"; return 1; }
-  assume "tf-${stack}"
+  assume "tf-${stack}" || { echo "::error title=$stack::could not assume ci/tf-${stack}"; return 1; }
   log "init $stack"; init "$dir"; endlog
   log "plan $stack (locked)"
   terraform -chdir="$dir" plan -input=false -no-color -detailed-exitcode -out=tfplan >"$out/plan.log" 2>&1 || rc=$?
