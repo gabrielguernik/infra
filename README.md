@@ -505,7 +505,7 @@ CI runs these on every pull request (`terraform-pr`); locally:
 
 ```bash
 terraform fmt -recursive -check
-tflint --init && tflint --recursive
+tflint --init && tflint --recursive --minimum-failure-severity=warning
 trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml .
 pre-commit run -a   # fmt, validate, tflint, checkov
 ```

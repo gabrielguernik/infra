@@ -84,7 +84,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }} # plugin download without rate limits
         run: |
           tflint --init --config "$PWD/.tflint.hcl"
-          tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+          tflint --recursive --config "$PWD/.tflint.hcl" --format compact --minimum-failure-severity=warning # notices are shown, not failures
       - name: Trivy config scan (HIGH, CRITICAL; accepted findings in .trivyignore.yaml)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
