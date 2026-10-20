@@ -473,7 +473,7 @@ Fallback, if a component still needs IMDS: `imds_hop_limit = 2` in the eks modul
 
 ## Not implemented: improvements for production
 
-These were planned (Phase 5) and deliberately left out of the sandbox.
+These were planned (Phases 5 and 7) and deliberately left out of the sandbox.
 
 ### Autoscaling
 
@@ -516,6 +516,26 @@ There are none except ArgoCD's own; any pod can reach any pod. The VPC CNI alrea
 Security groups already limit what reaches RDS and Valkey (only `sg-app`); NetworkPolicies would add pod-level limits
 inside the cluster.
 
+### Progressive delivery (canary)
+
+Planned as a bonus phase; not implemented now. Today a deploy is a rolling update. The readiness probe and the ALB
+readiness gates keep old pods serving until new ones take traffic, and a rollback is a revert of the gitops deploy
+commit (realworld-app README). A bad release still reaches all users before anyone notices, though: the alerts need
+5–10 minutes.
+
+The design:
+- **Argo Rollouts** as a platform Application.
+- **The app chart's Deployment becomes a `Rollout`** with canary steps: 20% → analysis → 50% → analysis → 100%.
+- **Traffic split:** the ALB's weighted target groups (Rollouts' AWS Load Balancer Controller integration, with stable and
+  canary Services), so the percentage is exact rather than a ratio of pods.
+- **Analysis:** an `AnalysisTemplate` queries AMP (SigV4, an IRSA role for the Rollouts controller). It compares the
+  canary's 5xx ratio and p95 latency with the stable version's, which needs Alloy to keep the pod-template-hash label.
+  A regression aborts the rollout and shifts traffic back automatically.
+- **Load during analysis:** a k6 Job (Rollouts' Job metric provider), so the comparison has enough requests even with
+  little real traffic. Optionally, CI compares k6 results with a baseline stored in S3.
+- **Migrations:** unchanged. They already must be compatible with the previous release (expand/contract), which a canary
+  requires anyway, because both versions serve at once.
+
 ### RDS restore test
 
 Automated backups are on: 7-day retention and point-in-time recovery (`db_backup_retention_days`). A restore has never
@@ -537,7 +557,7 @@ account, and Multi-AZ (`rds_multi_az`).
 - The log archive bucket has no S3 server access logging of its own.
 - The CI roles for network and edge use broad `ec2:*` / `acm:*` / `wafv2:*` service actions; instance launches are denied for `tf-network`.
 - One account and one region stand in for a multi-account, multi-region organization.
-- No autoscaling, PodDisruptionBudgets or NetworkPolicies, and no tested RDS restore (see "Not implemented").
+- No autoscaling, PodDisruptionBudgets, NetworkPolicies or canary releases, and no tested RDS restore (see "Not implemented").
 - The `realworld_app` and `realworld_migrator` passwords are not rotated automatically. Prod: Secrets Manager rotation
   with alternating users; Reloader already rolls the pods when their Secret changes.
 - Observability has no alert delivery, no platform alerts or metrics, and Grafana in the same cluster it watches
