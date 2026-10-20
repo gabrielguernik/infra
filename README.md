@@ -338,7 +338,7 @@ lost on restart. To change a dashboard, export its JSON into the chart.
 | Fault | Result |
 |---|---|
 | A NetworkPolicy cuts the API pods off from PostgreSQL, under about 2 req/s of traffic | Pods unready in seconds; the ALB answers 503. `RealworldHighErrorRate` went pending after 3.5 min and fired after 8.6 min ("100% of requests fail with 5xx at the load balancer"). The runbook led to the cause: ALB 5xx but no API traffic, then "not ready: database check failed: timeout after 1000ms" from both pods. After the policy was deleted, the pods were ready in 21 s, and the alert resolved after 8.5 min (5-minute window plus CloudWatch's 1–2 minute delay). |
-| An in-cluster k6 load test (300 virtual users on article and tag reads, 15 min) | p95 rose to about 600 ms. `RealworldHighLatency` went pending 5 min into the load and fired 10 min later ("p95 latency is 508.5ms"). The runbook pinned the cause on the API pods, not the database: `/api/tags` and `/api/articles` were slow, both pods were CPU-bound at about 0.92 cores (Node runs one thread) with about 430 ms of event-loop lag, and up to 183 queries waited per pod, while RDS CPU peaked at 14%. The fix is more pods, which is HPA in Phase 5. k6 itself measured p95 857 ms with 0 errors; the app's histogram reads lower because it starts timing only after the event loop picks up a request. |
+| An in-cluster k6 load test (300 virtual users on article and tag reads, 15 min) | p95 rose to about 600 ms. `RealworldHighLatency` went pending 5 min into the load and fired 10 min later ("p95 latency is 508.5ms"). The runbook pinned the cause on the API pods, not the database: `/api/tags` and `/api/articles` were slow, both pods were CPU-bound at about 0.92 cores (Node runs one thread) with about 430 ms of event-loop lag, and up to 183 queries waited per pod, while RDS CPU peaked at 14%. The fix is more pods: autoscaling, not implemented (see "Not implemented"). k6 itself measured p95 857 ms with 0 errors; the app's histogram reads lower because it starts timing only after the event loop picks up a request. |
 
 The first run showed two gaps, both fixed:
 - **The error alert first used the app's own metrics,** which never see the ALB's 503s, so a total outage would have gone unnoticed.
@@ -471,6 +471,64 @@ node role. Pods get AWS credentials only through IRSA. Add-ons that would discov
 
 Fallback, if a component still needs IMDS: `imds_hop_limit = 2` in the eks module. Every pod could then use the node role.
 
+## Not implemented: improvements for production
+
+These were planned (Phase 5) and deliberately left out of the sandbox.
+
+### Autoscaling
+
+The API runs a fixed 2 replicas on a fixed node group of 2 × t3.medium (`node_min_size`; the `eks` module ignores
+`desired_size` changes so that an autoscaler can own it). The latency test in "Observability" shows the cost: under
+load, both pods were CPU-bound at about 0.92 cores while RDS sat at 14% CPU, so more pods would have fixed it.
+- **Pods: HorizontalPodAutoscaler** on the API.
+  - It scales on CPU (requests are 100m, and a Node process saturates at about one core) and on requests per pod, read
+    from AMP through KEDA or the Prometheus adapter.
+  - It needs metrics-server (an EKS add-on).
+  - The maximum is bounded by the `realworld_app` connection limit: replicas × `dbConnectionLimit` must stay under 20.
+    Raise it in `db-bootstrap` together with the HPA maximum.
+- **Nodes: Karpenter.**
+  - A `NodePool` and `EC2NodeClass` for workloads, with on-demand t3 instances (the SCP allows up to t3.medium).
+  - The system node group stays for the controllers.
+  - It needs a node IAM role, an interruption queue and EventBridge rules in `eks`, plus an IRSA role in `platform`.
+  - Its `EC2NodeClass` selects `sg-app` by tag.
+  - Destroy must then also wait for Karpenter's instances to go.
+
+### PodDisruptionBudgets
+
+None exist. A node drain (an EKS or AMI upgrade, Karpenter consolidation) may evict both API pods at once; the rolling
+update strategy (`maxUnavailable: 0`) protects deploys, not drains.
+- **The API:** `minAvailable: 1` (with 2 replicas). Topology spread already places the pods in different zones.
+- **Platform controllers** running more than one replica would get one too. Single-replica controllers (sandbox
+  sizing) can't have a useful PDB: it would block drains forever. In prod they'd run 2 replicas.
+
+### NetworkPolicies
+
+There are none except ArgoCD's own; any pod can reach any pod. The VPC CNI already enforces policies
+(`--enable-network-policy=true`), and the Phase 4 fault test used one, so this is configuration only:
+- **Default deny** ingress and egress in every application namespace, through the app chart or a namespace baseline
+  managed by the platform.
+- **The API allows:**
+  - ingress on port 3000 from the ALB, and from Alloy for `/metrics`;
+  - egress to DNS, PostgreSQL (5432) and Valkey (6379), plus the AWS endpoints its controllers need (no AWS calls from the app itself).
+- **The migrate Job:** egress to DNS and PostgreSQL only.
+- **Platform namespaces:** allow-lists per controller, which need care: the API server, webhooks, AWS endpoints.
+
+Security groups already limit what reaches RDS and Valkey (only `sg-app`); NetworkPolicies would add pod-level limits
+inside the cluster.
+
+### RDS restore test
+
+Automated backups are on: 7-day retention and point-in-time recovery (`db_backup_retention_days`). A restore has never
+been tested, so the RPO and RTO are unmeasured. The test would:
+1. restore to a point in time with `aws rds restore-db-instance-to-point-in-time` into a new instance in the same
+   subnet group, with `sg-db`;
+2. run a pod with `psql` (as in db-bootstrap) against it, and check row counts and the latest writes;
+3. time it, and write down the steps, the RTO (restore time) and the RPO (the newest restorable time, usually within 5 minutes);
+4. delete the instance.
+
+Also for prod: `db_deletion_protection = true`, `db_skip_final_snapshot = false`, snapshot copies to another region or
+account, and Multi-AZ (`rds_multi_az`).
+
 ## Known gaps
 
 - Single NAT gateway (toggle in `network/terraform.tfvars`, prod value in the prod stub).
@@ -479,6 +537,7 @@ Fallback, if a component still needs IMDS: `imds_hop_limit = 2` in the eks modul
 - The log archive bucket has no S3 server access logging of its own.
 - The CI roles for network and edge use broad `ec2:*` / `acm:*` / `wafv2:*` service actions; instance launches are denied for `tf-network`.
 - One account and one region stand in for a multi-account, multi-region organization.
+- No autoscaling, PodDisruptionBudgets or NetworkPolicies, and no tested RDS restore (see "Not implemented").
 - The `realworld_app` and `realworld_migrator` passwords are not rotated automatically. Prod: Secrets Manager rotation
   with alternating users; Reloader already rolls the pods when their Secret changes.
 - Observability has no alert delivery, no platform alerts or metrics, and Grafana in the same cluster it watches
