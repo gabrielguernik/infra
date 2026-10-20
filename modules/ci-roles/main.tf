@@ -1,8 +1,10 @@
-# One IAM role per CI consumer (each Terraform stack, plus ci-build), assumable only through GitHub OIDC.
-# Each role gets:
-#   - state:   read/write on its own key prefix in the state bucket (the bucket policy also enforces this);
+# One IAM role per CI consumer (each Terraform stack's plan and apply roles, ci-build, ...), assumable only through
+# GitHub OIDC. Each role gets:
+#   - state:   read/write (or read-only) on its own key prefix in the state bucket (the bucket policy also enforces this);
 #   - ssm:     write on its own /<env>/<region>/<stack> path, read on the paths it consumes;
-#   - service: the AWS permissions its resources need, from policies/<template>.json.tftpl.
+#   - secrets: GetSecretValue on the listed secrets (plan roles: refreshing secret versions needs the value);
+#   - service: the AWS permissions its resources need, from policies/<template>.json.tftpl;
+#   - managed: AWS managed policies (plan roles: ReadOnlyAccess).
 
 terraform {
   required_version = "~> 1.16"
@@ -27,11 +29,14 @@ variable "state_bucket_arn" {
 variable "roles" {
   description = "Role name => settings."
   type = map(object({
-    github_subjects   = list(string)     # allowed OIDC 'sub' claims, e.g. repo:owner/infra:pull_request
-    policy_template   = string           # file name in policies/, without .json.tftpl
-    state_prefix      = optional(string) # null for roles that never touch state (ci-build)
-    ssm_write_prefix  = optional(string) # e.g. /sandbox/us-east-1/network
-    ssm_read_prefixes = optional(list(string), [])
+    github_subjects     = list(string)          # allowed OIDC 'sub' claims, e.g. repo:owner/infra:pull_request
+    policy_template     = optional(string)      # file name in policies/, without .json.tftpl; null = none
+    state_prefix        = optional(string)      # null for roles that never touch state (ci-build)
+    state_read_only     = optional(bool, false) # plan roles: read state, never write it (plans run with -lock=false)
+    ssm_write_prefix    = optional(string)      # e.g. /sandbox/us-east-1/network
+    ssm_read_prefixes   = optional(list(string), [])
+    secret_read_arns    = optional(list(string), []) # secret ARNs (wildcards allowed) this role may read
+    managed_policy_arns = optional(list(string), [])
   }))
 }
 
@@ -94,7 +99,7 @@ resource "aws_iam_role" "this" {
 }
 
 data "aws_iam_policy_document" "base" {
-  for_each = { for k, v in var.roles : k => v if v.state_prefix != null || v.ssm_write_prefix != null || length(v.ssm_read_prefixes) > 0 }
+  for_each = { for k, v in var.roles : k => v if v.state_prefix != null || v.ssm_write_prefix != null || length(v.ssm_read_prefixes) > 0 || length(v.secret_read_arns) > 0 }
 
   # Key names in the state bucket are not sensitive; object access below is what is scoped.
   # The S3 backend lists the bucket during init (workspace discovery), so ListBucket stays unconditional.
@@ -111,7 +116,7 @@ data "aws_iam_policy_document" "base" {
     for_each = each.value.state_prefix == null ? [] : [1]
     content {
       sid       = "StateObjects"
-      actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      actions   = each.value.state_read_only ? ["s3:GetObject"] : ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
       resources = ["${var.state_bucket_arn}/${each.value.state_prefix}/*"]
     }
   }
@@ -151,6 +156,15 @@ data "aws_iam_policy_document" "base" {
   }
 
   dynamic "statement" {
+    for_each = length(each.value.secret_read_arns) == 0 ? [] : [1]
+    content {
+      sid       = "SecretValues"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = each.value.secret_read_arns
+    }
+  }
+
+  dynamic "statement" {
     for_each = each.value.ssm_write_prefix == null ? [] : [1]
     content {
       sid       = "SsmDescribe"
@@ -169,11 +183,18 @@ resource "aws_iam_role_policy" "base" {
 }
 
 resource "aws_iam_role_policy" "service" {
-  for_each = var.roles
+  for_each = { for k, v in var.roles : k => v if v.policy_template != null }
 
   name   = "service"
   role   = aws_iam_role.this[each.key].id
   policy = templatefile("${path.module}/policies/${each.value.policy_template}.json.tftpl", var.template_vars)
+}
+
+resource "aws_iam_role_policy_attachment" "managed" {
+  for_each = merge([for k, v in var.roles : { for arn in v.managed_policy_arns : "${k}|${arn}" => { role = k, arn = arn } }]...)
+
+  role       = aws_iam_role.this[each.value.role].name
+  policy_arn = each.value.arn
 }
 
 output "role_arns" {

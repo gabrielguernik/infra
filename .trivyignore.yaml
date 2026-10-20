@@ -1,0 +1,25 @@
+# Trivy misconfiguration findings accepted on purpose (HIGH/CRITICAL; CI fails on any other).
+# Each entry says why; README "Known gaps" and "Security notes" list the production follow-ups.
+misconfigurations:
+  - id: AWS-0104 # security group allows unrestricted egress
+    paths:
+      - modules/bastion/main.tf
+      - modules/edge/main.tf
+      - modules/eks/main.tf
+    statement: >-
+      Egress filtering is a documented gap: the bastion reaches Session Manager and the EKS API on 443, the ALB reaches
+      targets, nodes pull images and call AWS APIs through the NAT. Prod: an egress proxy or Network Firewall with an
+      allow-list.
+  - id: AWS-0039 # EKS secrets not encrypted with a customer managed KMS key
+    paths:
+      - modules/eks/main.tf
+    statement: >-
+      EKS encrypts all Kubernetes API data, Secrets included, with an AWS-owned key by default. Customer managed KMS keys
+      per environment are a documented prod upgrade.
+  - id: AWS-0132 # S3 bucket not encrypted with a customer managed key
+    paths:
+      - modules/log-archive/main.tf
+      - modules/tf-state-backend/main.tf
+    statement: >-
+      SSE-S3 is used on purpose (README "Security notes"); customer managed KMS keys per environment are a documented
+      prod upgrade.

@@ -1,0 +1,165 @@
+# Pull requests: static checks on everything, and a read-only plan of every affected stack, posted as a PR comment.
+#
+# Plans use the stack's plan role (ci/tf-<stack>-plan: read-only, -lock=false). No role a pull request can assume
+# can write anything. Applying happens only after merge, in terraform-apply.yml, and only if the plans on main match
+# the ones reviewed here: each plan's resource change list is uploaded as artifact pr-plan-<stack>.
+# Review the plan comments before approving and merging: merging is the approval.
+name: terraform-pr
+
+on:
+  pull_request:
+    paths:
+      - "live/**"
+      - "modules/**"
+      - "scripts/ci/**"
+      - ".github/workflows/terraform-*.yml"
+      - ".terraform-version"
+      - ".tflint.hcl"
+      - ".trivyignore.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  ACCOUNT_ID: "965140467182"
+  AWS_REGION: us-east-1
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      stacks: ${{ steps.affected.outputs.stacks }}
+      bootstrap: ${{ steps.affected.outputs.bootstrap }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: affected
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          r="$(scripts/ci/stacks.py affected "$BASE" "$HEAD")"
+          echo "stacks=$(jq -c .stacks <<<"$r")" >>"$GITHUB_OUTPUT"
+          echo "bootstrap=$(jq -r .bootstrap <<<"$r")" >>"$GITHUB_OUTPUT"
+          echo "Affected stacks: \`$(jq -c .stacks <<<"$r")\`, bootstrap changed: $(jq -r .bootstrap <<<"$r")" >>"$GITHUB_STEP_SUMMARY"
+
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version_file: .terraform-version
+          terraform_wrapper: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: terraform-plugins-${{ hashFiles('**/.terraform.lock.hcl') }}
+      - name: terraform fmt
+        run: terraform fmt -recursive -check -diff
+      - name: terraform validate (every stack, bootstrap included)
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          rc=0
+          for dir in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; | sort -u); do
+            if terraform -chdir="$dir" init -backend=false -input=false -no-color -lockfile=readonly >/dev/null \
+              && terraform -chdir="$dir" validate -no-color >/dev/null; then
+              echo "ok    $dir"
+            else
+              echo "FAIL  $dir"; terraform -chdir="$dir" validate -no-color || true; rc=1
+            fi
+          done
+          exit $rc
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.61.0
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # plugin download without rate limits
+        run: |
+          tflint --init --config "$PWD/.tflint.hcl"
+          tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+      - name: Trivy config scan (HIGH, CRITICAL; accepted findings in .trivyignore.yaml)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.75.0
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+
+  plan:
+    needs: changes
+    if: needs.changes.outputs.stacks != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC → ci/tf-<stack>-plan
+      pull-requests: write # the plan comment
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: ${{ fromJSON(needs.changes.outputs.stacks) }}
+    name: plan (${{ matrix.stack }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version_file: .terraform-version
+          terraform_wrapper: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: terraform-plugins-${{ hashFiles('**/.terraform.lock.hcl') }}
+      - name: plan
+        env:
+          STACK: ${{ matrix.stack }}
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && scripts/ci/tf.sh plan "$STACK" plan
+      - name: comment
+        if: always() && hashFiles(format('.tf-ci/{0}/status', matrix.stack)) != ''
+        env:
+          STACK: ${{ matrix.stack }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ci/tf.sh comment "$STACK" "$PR"
+          { echo "### \`$STACK\`: $(cat ".tf-ci/$STACK/summary.txt")"; echo '```hcl'; head -c 200000 ".tf-ci/$STACK/plan.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+      - name: upload the reviewed change list
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-plan-${{ matrix.stack }}
+          path: .tf-ci/${{ matrix.stack }}/changes.json # resource addresses and actions only; no values
+          retention-days: 30
+
+  bootstrap-notice:
+    needs: changes
+    if: needs.changes.outputs.bootstrap == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- tf-plan:bootstrap -->"
+          {
+            echo "$marker"
+            cat <<'EOF'
+          ### ⚠️ `bootstrap` changed
+          CI never plans or applies `live/accounts/sandbox/_global/bootstrap`: it creates the CI roles. After merging,
+          an admin applies it by hand (README, "Setup from zero"). If other stacks depend on the change (new
+          permissions), apply bootstrap first.
+          EOF
+          } >body.md
+          id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)"
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@body.md >/dev/null
+          else gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi

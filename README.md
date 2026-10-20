@@ -17,7 +17,8 @@ live/      one folder per stack instance; backend, provider, module calls, SSM r
   envs/sandbox/us-east-1/{network,bastion,edge,eks,data,monitoring,platform}
   envs/prod/...   stub tfvars showing the prod toggles; never applied
 docs/      cidr-plan.md
-scripts/   tunnel.sh: SSM port forwarding through the bastion
+scripts/   tunnel.sh: SSM port forwarding through the bastion; ci/: the Terraform workflows' logic
+.github/workflows/   terraform-pr, terraform-apply, terraform-drift
 ```
 
 ## Stack catalogue
@@ -79,6 +80,7 @@ Each provider sets `allowed_account_ids`, so a stack refuses to run against any 
 15. ArgoCD: run the `argocd` workflow in [gitops](https://github.com/gabrielguernik/gitops) (Actions → argocd → Run workflow). It installs ArgoCD through the bastion, and ArgoCD deploys everything else in the cluster from that repo.
 
 No stack talks to the Kubernetes API: Terraform stops at AWS resources, so every stack can be planned without the tunnel.
+After the first build, changes go through CI ("CI/CD (Terraform)"): a PR plans them, and merging applies them in this order.
 
 ### Destroy order (environment, between work sessions)
 
@@ -391,13 +393,77 @@ The sandbox keeps observability small on purpose. A production setup adds:
 - The key equals the stack's folder under `live/`.
 - The bucket policy denies each `tf-<stack>` role every object outside its own prefix, so no CI role can read another stack's state.
 
+## CI/CD (Terraform)
+
+Three workflows in `.github/workflows/`, plain Terraform and official actions pinned by commit, with the logic in
+`scripts/ci/` (`stacks.py`: which stacks and in what order; `tf.sh`: assume a role, plan, compare, apply).
+
+| Workflow | When | What |
+|---|---|---|
+| `terraform-pr` | Pull requests touching Terraform or the CI | **Static checks** on everything: `fmt`, `validate` (every stack, bootstrap included), `tflint`, Trivy config scan (HIGH and CRITICAL; accepted findings with reasons in `.trivyignore.yaml`). **Plan** of each affected stack with its read-only role, posted as one PR comment per stack and updated on each push. The change lists are kept as artifacts: they are what the merge approves. |
+| `terraform-apply` | Push to `main`; manual | Plans the stacks affected since the last apply, read-only. **Applies only if each plan is identical to the one reviewed in the merged PR**, then, in apply order with the write roles, re-plans each stack with the state lock and applies only if the plan still matches. Moves the tag `applied/sandbox` when done. |
+| `terraform-drift` | Daily 06:17 UTC; manual | Read-only plan of every stack. Drift or a failed plan fails the run and opens or updates the issue labelled `drift`; a clean run closes it. Stacks with empty state (environment torn down) count as "not deployed". |
+
+**Which stacks run.** The stack list and the apply order are the `stacks` map in `bootstrap/terraform.tfvars`, the
+same map that creates the roles. A stack is affected when its folder or a module it calls changes, and so are the stacks
+that read its SSM outputs, transitively: they're re-planned after it applies. A change to the CI itself plans
+everything. On `main`, "affected" is measured from the tag `applied/sandbox`, so a failed or skipped run can't make a later
+one skip its stacks.
+
+**Who can write.**
+- Pull requests only get the read-only `tf-<stack>-plan` roles, and plans run with `-lock=false`.
+- The write roles `tf-<stack>` trust only the GitHub environment `sandbox`, which only `main` can deploy to.
+- `bootstrap` is never run by CI. A PR that touches it gets a comment saying an admin must apply it.
+
+**The approval is the PR review.** This repo's GitHub plan has no required reviewers for environments in private repos,
+so merging approves the plans shown in the PR comments. The apply refuses anything else:
+- **No PR:** a direct push to `main` is planned, never applied.
+- **A stack the PR didn't plan, or a plan that changed** (main moved, the state changed): nothing is applied.
+- **A downstream stack whose plan changes because an upstream stack applied first in the same run:** the run stops there.
+
+In those cases, review the run's plans and start **terraform-apply** by hand (Actions → terraform-apply → Run
+workflow) with `apply: true`. `apply: false` only plans. With GitHub Team or Enterprise, add required reviewers to the
+`sandbox` environment; the apply job then also waits for a person, with no workflow change.
+
+**Typical change:** branch → PR → read the plan comments (🟡 changes, 🟢 none, 🔴 failed) → merge → the apply
+workflow applies it. Destroying a stack is never automated (see "Destroy order").
+
+**Local dry run** of the CI logic with your own credentials:
+`TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=965140467182 scripts/ci/tf.sh plan <stack> plan`.
+
+### Production improvements
+
+The pipeline stays small on purpose. A full production setup adds:
+- **Approvals and branch rules:** a GitHub plan with required reviewers on the environments, prod requiring two people and
+  CODEOWNERS per area. A branch ruleset on `main`: PRs only, required checks (static, plans), up-to-date branches,
+  signed commits. A merge queue so merges, and their plans, are serialized.
+- **One account per environment** (sandbox, staging, prod), each with its own state bucket, KMS key and CI roles, and
+  changes promoted sandbox → staging → prod through the same plan and approve steps per environment.
+- **Exact plan apply:** store the reviewed plan file encrypted (an S3 bucket with KMS, per run) and apply that file,
+  instead of re-planning and comparing change lists. Today's comparison checks addresses and actions, not attribute values.
+- **Narrower plan roles:** a custom read policy per stack instead of `ReadOnlyAccess` (which can read any S3 object and
+  many configurations). Keep secrets out of state altogether (ephemeral resources and write-only arguments in Terraform
+  1.11+, or secrets generated outside Terraform), so plans need no secret values.
+- **Policy as code and cost** on every plan: OPA/Conftest checks on the plan JSON (no public buckets, tags present, no
+  destroys of protected resources without a label), and Infracost comments.
+- **An orchestrator** once the stacks grow: Atlantis, Terramate, Spacelift, HCP Terraform or env0. They provide
+  dependency graphs, per-stack locks and queues, drift remediation and audit logs. Today's ordering is the `stacks` map and
+  the SSM consumer links; tag-based cross-stack references aren't modelled.
+- **Runners:** self-hosted ephemeral runners inside the AWS network (Actions Runner Controller or CodeBuild), with
+  network egress restricted (e.g. StepSecurity harden-runner); no public runners holding cloud credentials.
+- **Supply chain:** Renovate for provider, module and action updates, with plans in the PR; module tests (`terraform test`)
+  and versioned modules in a registry.
+- **Drift and audit:** drift alerts to the team's chat or on-call tool instead of an issue. CloudTrail on the CI roles'
+  sessions, and alarms on any write by a principal other than the apply roles.
+
 ## CI roles
 
 GitHub Actions authenticates through OIDC. There are no long-lived keys.
 
 | Role | Trusted subjects | Can do |
 |---|---|---|
-| `ci/tf-<stack>` | `repo:gabrielguernik/infra` on `main` and pull requests | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl` |
+| `ci/tf-<stack>` | `repo:gabrielguernik/infra`, GitHub environment `sandbox` only (the apply job; deployment branch `main`) | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl` |
+| `ci/tf-<stack>-plan` | `repo:gabrielguernik/infra` on `main` and pull requests | Read-only: AWS `ReadOnlyAccess`, its own state prefix read-only, its own and consumed SSM paths, and the values of the secrets the stack manages (`plan_secrets`: `data`, `monitoring`), which refresh reads |
 | `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the `realworld-api` ECR repo |
 | `ci/argocd-<cluster>` | `repo:gabrielguernik/gitops`, GitHub environment `<cluster>` only | Port forwarding through the bastion to the cluster API, `eks:DescribeCluster`, read `<env>/argocd/*` secrets; cluster-admin access entry in `eks` |
 | `ci/gitops-check` | `repo:gabrielguernik/gitops` on `main` and pull requests | Read-only: describe the VPCs, security groups, IRSA roles, secret metadata, RDS instances, certificates, AMP workspaces and log groups that gitops references |
@@ -431,11 +497,13 @@ bumped, so environments can be promoted one at a time.
 
 ## Lint
 
+CI runs these on every pull request (`terraform-pr`); locally:
+
 ```bash
 terraform fmt -recursive -check
 tflint --init && tflint --recursive
-checkov -d .        # optional
-pre-commit run -a   # all of the above
+trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml .
+pre-commit run -a   # fmt, validate, tflint, checkov
 ```
 
 ## Log archive cost

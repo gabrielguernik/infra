@@ -9,6 +9,7 @@ parent_domain   = "gg-incode.click"
 parent_zone_id  = "Z0129084A5AOP8NVXZQO"
 env             = "sandbox"
 
+# In apply order: CI applies affected stacks in this order (scripts/ci/stacks.py).
 stacks = {
   shared-global = {
     state_prefix     = "shared/_global/shared-global"
@@ -55,10 +56,12 @@ stacks = {
     state_prefix      = "envs/sandbox/us-east-1/data"
     ssm_write_prefix  = "/sandbox/us-east-1/data"
     ssm_read_prefixes = ["/sandbox/us-east-1/network"]
+    plan_secrets      = ["sandbox/realworld/*"]
   }
   monitoring = {
     state_prefix     = "envs/sandbox/us-east-1/monitoring"
     ssm_write_prefix = "/sandbox/us-east-1/monitoring"
+    plan_secrets     = ["sandbox/monitoring/*"]
   }
   platform = {
     state_prefix      = "envs/sandbox/us-east-1/platform"
