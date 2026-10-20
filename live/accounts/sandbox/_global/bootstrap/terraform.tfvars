@@ -4,11 +4,11 @@ github_owner    = "gabrielguernik"
 github_owner_id = "35024789"
 infra_repo      = { name = "infra", id = "1425953183" }
 app_repo        = { name = "realworld-app", id = "1425953552" }
+gitops_repo     = { name = "gitops", id = "1426997794" }
 parent_domain   = "gg-incode.click"
 parent_zone_id  = "Z0129084A5AOP8NVXZQO"
 env             = "sandbox"
 
-# platform is added in Phase 3.
 stacks = {
   shared-global = {
     state_prefix     = "shared/_global/shared-global"
@@ -56,4 +56,12 @@ stacks = {
     ssm_write_prefix  = "/sandbox/us-east-1/data"
     ssm_read_prefixes = ["/sandbox/us-east-1/network"]
   }
+  platform = {
+    state_prefix      = "envs/sandbox/us-east-1/platform"
+    ssm_write_prefix  = "/sandbox/us-east-1/platform"
+    ssm_read_prefixes = ["/sandbox/_global/dns", "/sandbox/us-east-1/eks", "/sandbox/us-east-1/data"]
+  }
 }
+
+# Clusters whose ArgoCD is installed by the gitops pipeline (role ci/argocd-<cluster>).
+argocd_clusters = ["sandbox-us-east-1"]

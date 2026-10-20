@@ -1,0 +1,48 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      # Port forwarding through the bastion only: no shell, no other instance, no other document.
+      Sid       = "TunnelThroughBastion"
+      Effect    = "Allow"
+      Action    = ["ssm:StartSession"]
+      Resource  = "arn:aws:ec2:${region}:${account_id}:instance/*"
+      Condition = {
+        StringEquals = { "ssm:resourceTag/Stack" = "bastion", "ssm:resourceTag/Environment" = env }
+        BoolIfExists = { "ssm:SessionDocumentAccessCheck" = "true" } # no default shell document
+      }
+    },
+    {
+      Sid      = "PortForwardDocument"
+      Effect   = "Allow"
+      Action   = ["ssm:StartSession"]
+      Resource = "arn:aws:ssm:${region}::document/AWS-StartPortForwardingSessionToRemoteHost"
+    },
+    {
+      # Session IDs start with the role session name the workflow sets: argocd-<cluster>-<run id>.
+      Sid      = "OwnSessions"
+      Effect   = "Allow"
+      Action   = ["ssm:TerminateSession", "ssm:ResumeSession"]
+      Resource = "arn:aws:ssm:${region}:${account_id}:session/argocd-${cluster_name}-*"
+    },
+    {
+      Sid      = "InstanceAndSessionStatus"
+      Effect   = "Allow"
+      Action   = ["ssm:DescribeInstanceInformation", "ssm:DescribeSessions"]
+      Resource = "*"
+    },
+    {
+      Sid      = "Cluster"
+      Effect   = "Allow"
+      Action   = ["eks:DescribeCluster"]
+      Resource = "arn:aws:eks:${region}:${account_id}:cluster/${cluster_name}"
+    },
+    {
+      # ArgoCD's repository deploy keys, created outside Terraform.
+      Sid      = "RepoCredentials"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+      Resource = "arn:aws:secretsmanager:${region}:${account_id}:secret:${env}/argocd/*"
+    },
+  ]
+})}

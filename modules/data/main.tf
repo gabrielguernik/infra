@@ -313,6 +313,49 @@ resource "aws_secretsmanager_secret_version" "app" {
   secret_string = jsonencode({
     JWT_SECRET       = random_password.jwt.result
     REDIS_AUTH_TOKEN = random_password.cache_auth.result
+    REDIS_HOST       = aws_elasticache_replication_group.this.primary_endpoint_address
+    REDIS_PORT       = tostring(aws_elasticache_replication_group.this.port)
+  })
+}
+
+# --- Database roles -------------------------------------------------------------------
+# Workloads never use the RDS-managed master user. These are the passwords for the two roles that the
+# platform's db-bootstrap Job creates (as master) in the cluster: the migrator owns the schema, the app has DML only.
+# Each secret carries the connection details too, so consumers reference it by name and need no endpoints.
+
+locals {
+  db_roles = {
+    app      = "${var.db_name}_app"
+    migrator = "${var.db_name}_migrator"
+  }
+}
+
+# Alphanumeric only, so the password can go into a connection URL without encoding.
+resource "random_password" "db_role" {
+  for_each = local.db_roles
+
+  length  = 40
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "db_role" {
+  for_each = local.db_roles
+
+  name                    = "${var.env}/realworld/db-${each.key}"
+  description             = "PostgreSQL role ${each.value}: credentials and connection details"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "db_role" {
+  for_each = local.db_roles
+
+  secret_id = aws_secretsmanager_secret.db_role[each.key].id
+  secret_string = jsonencode({
+    username = each.value
+    password = random_password.db_role[each.key].result
+    host     = aws_db_instance.this.address
+    port     = tostring(aws_db_instance.this.port)
+    dbname   = aws_db_instance.this.db_name
   })
 }
 
@@ -351,6 +394,16 @@ output "cache_port" {
 output "app_secret_arn" {
   description = "Secrets Manager ARN of the application secrets."
   value       = aws_secretsmanager_secret.app.arn
+}
+
+output "db_role_secret_arns" {
+  description = "Secrets Manager ARNs of the database role credentials (app, migrator)."
+  value       = { for k, s in aws_secretsmanager_secret.db_role : k => s.arn }
+}
+
+output "db_instance_arn" {
+  description = "RDS instance ARN; the RDS-managed master secret carries it in tag aws:rds:primaryDBInstanceArn."
+  value       = aws_db_instance.this.arn
 }
 
 output "db_sg_id" {

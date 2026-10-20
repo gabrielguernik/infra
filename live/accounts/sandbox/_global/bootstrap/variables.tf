@@ -34,6 +34,20 @@ variable "app_repo" {
   })
 }
 
+variable "gitops_repo" {
+  description = "Repo holding the GitOps config and the ArgoCD install pipeline: name and numeric ID."
+  type = object({
+    name = string
+    id   = string
+  })
+}
+
+variable "argocd_clusters" {
+  description = "EKS clusters (<env>-<region>) whose ArgoCD install job in the gitops repo gets a role, ci/argocd-<cluster>."
+  type        = list(string)
+  default     = []
+}
+
 variable "parent_domain" {
   description = "Registered parent domain."
   type        = string

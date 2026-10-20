@@ -5,8 +5,9 @@ locals {
   state_bucket_name = "tfstate-${var.account_id}-${var.region}"
   # GitHub's immutable OIDC subjects (default for new repos): owner and repo carry their numeric IDs, so a
   # deleted-and-recreated repo with the same name cannot inherit this trust.
-  infra_prefix = "repo:${var.github_owner}@${var.github_owner_id}/${var.infra_repo.name}@${var.infra_repo.id}"
-  app_prefix   = "repo:${var.github_owner}@${var.github_owner_id}/${var.app_repo.name}@${var.app_repo.id}"
+  infra_prefix  = "repo:${var.github_owner}@${var.github_owner_id}/${var.infra_repo.name}@${var.infra_repo.id}"
+  app_prefix    = "repo:${var.github_owner}@${var.github_owner_id}/${var.app_repo.name}@${var.app_repo.id}"
+  gitops_prefix = "repo:${var.github_owner}@${var.github_owner_id}/${var.gitops_repo.name}@${var.gitops_repo.id}"
 
   infra_subjects = [
     "${local.infra_prefix}:ref:refs/heads/main",
@@ -32,6 +33,30 @@ locals {
       ssm_read_prefixes = []
     }
   }
+
+  # Read-only: the gitops repo's checks verify that every AWS resource a cluster folder references still exists.
+  gitops_check_roles = {
+    "gitops-check" = {
+      github_subjects   = ["${local.gitops_prefix}:ref:refs/heads/main", "${local.gitops_prefix}:pull_request"]
+      policy_template   = "gitops-check"
+      state_prefix      = null
+      ssm_write_prefix  = null
+      ssm_read_prefixes = []
+    }
+  }
+
+  # The gitops pipeline's install job runs in a GitHub environment named after the cluster, so the OIDC subject is
+  # ...:environment:<cluster> (not :ref:...). Only jobs that pass that environment's protection rules get the role.
+  # This role assumes clusters are named <env>-<region> of this account's primary region and env.
+  argocd_roles = {
+    for c in var.argocd_clusters : "argocd-${c}" => {
+      github_subjects   = ["${local.gitops_prefix}:environment:${c}"]
+      policy_template   = "argocd"
+      state_prefix      = null
+      ssm_write_prefix  = null
+      ssm_read_prefixes = ["/${var.env}/${var.region}/eks", "/${var.env}/${var.region}/bastion"]
+    }
+  }
 }
 
 module "github_oidc" {
@@ -44,7 +69,7 @@ module "ci_roles" {
   oidc_provider_arn = module.github_oidc.provider_arn
   # Built from the name so roles and bucket policy don't depend on each other.
   state_bucket_arn = "arn:aws:s3:::${local.state_bucket_name}"
-  roles            = merge(local.tf_roles, local.build_roles)
+  roles            = merge(local.tf_roles, local.build_roles, local.argocd_roles, local.gitops_check_roles)
 
   template_vars = {
     account_id     = var.account_id
@@ -52,6 +77,8 @@ module "ci_roles" {
     parent_domain  = var.parent_domain
     parent_zone_id = var.parent_zone_id
     env_domain     = "${var.env}.${var.parent_domain}"
+    env            = var.env
+    cluster_name   = "${var.env}-${var.region}"
   }
 }
 

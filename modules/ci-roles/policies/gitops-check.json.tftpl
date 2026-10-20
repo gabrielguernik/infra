@@ -1,0 +1,30 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      Sid    = "DescribeReferencedResources"
+      Effect = "Allow"
+      Action = [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSecurityGroups",
+        "rds:DescribeDBInstances",
+        "acm:ListCertificates",
+        "secretsmanager:ListSecrets",
+      ]
+      Resource = "*"
+    },
+    {
+      Sid      = "IrsaRoles"
+      Effect   = "Allow"
+      Action   = ["iam:GetRole"]
+      Resource = "arn:aws:iam::${account_id}:role/irsa/*"
+    },
+    {
+      # Metadata only: DescribeSecret never returns the value.
+      Sid      = "SecretMetadata"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:DescribeSecret"]
+      Resource = "arn:aws:secretsmanager:${region}:${account_id}:secret:*/realworld/*"
+    },
+  ]
+})}
