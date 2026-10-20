@@ -428,6 +428,10 @@ workflow) with `apply: true`. `apply: false` only plans. With GitHub Team or Ent
 **Typical change:** branch → PR → read the plan comments (🟡 changes, 🟢 none, 🔴 failed) → merge → the apply
 workflow applies it. Destroying a stack is never automated (see "Destroy order").
 
+**Provider upgrades:** CI inits with `-lockfile=readonly`, so each `.terraform.lock.hcl` must carry the checksums of
+the CI platform too. After changing a provider version, lock for every platform:
+`terraform -chdir=<stack> providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64`.
+
 **Local dry run** of the CI logic with your own credentials:
 `TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=965140467182 scripts/ci/tf.sh plan <stack> plan`.
 
