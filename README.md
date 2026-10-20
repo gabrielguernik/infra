@@ -536,6 +536,34 @@ The design:
 - **Migrations:** unchanged. They already must be compatible with the previous release (expand/contract), which a canary
   requires anyway, because both versions serve at once.
 
+### Ingress proxy (Gateway API)
+
+Today there is no proxy in the cluster. The AWS Load Balancer Controller turns the app's `Ingress` into an ALB that
+terminates TLS and forwards straight to the pod IPs. That's enough for one API, but the ALB offers no authentication,
+no rate limiting and only basic routing.
+
+A production environment would put an **ingress proxy that implements the Gateway API** behind the ALB, for example
+Envoy Gateway, Istio, Cilium or NGINX Gateway Fabric.
+- **Traffic path:** the ALB (or an NLB) stays at the edge for ACM certificates, WAF and the public endpoint, and forwards to
+  the proxy's pods. The proxy routes to the apps.
+- **Gateway API resources:**
+  - the platform owns the `GatewayClass` and a shared `Gateway`, with listeners and certificates;
+  - each app ships its own `HTTPRoute` in its chart instead of an `Ingress`. It attaches only to the listeners the platform
+    allows for its namespace.
+- **Authentication:** JWT validation or OIDC at the proxy (e.g. Envoy Gateway's `SecurityPolicy`), so unauthenticated
+  requests never reach the app and services share one implementation.
+- **Rate limiting:** per client, route or API key, local or global (backed by Redis), to protect the API and the database
+  from abuse and runaway clients.
+- **Advanced routing:**
+  - header- and weight-based routing, request mirroring;
+  - retries and timeouts, request and response header rewrites;
+  - many hostnames and apps behind one load balancer.
+  Canary releases could then use `HTTPRoute` weights (Argo Rollouts' Gateway API plugin) instead of ALB target groups.
+- **Observability:** per-route request metrics and access logs from the proxy, in the same format for every app.
+
+Costs: a component on the request path that must run highly available (at least 2 replicas spread across zones, a PDB,
+and autoscaling), plus one extra network hop.
+
 ### RDS restore test
 
 Automated backups are on: 7-day retention and point-in-time recovery (`db_backup_retention_days`). A restore has never
@@ -557,7 +585,8 @@ account, and Multi-AZ (`rds_multi_az`).
 - The log archive bucket has no S3 server access logging of its own.
 - The CI roles for network and edge use broad `ec2:*` / `acm:*` / `wafv2:*` service actions; instance launches are denied for `tf-network`.
 - One account and one region stand in for a multi-account, multi-region organization.
-- No autoscaling, PodDisruptionBudgets, NetworkPolicies or canary releases, and no tested RDS restore (see "Not implemented").
+- No autoscaling, PodDisruptionBudgets, NetworkPolicies, canary releases or Gateway API ingress proxy (authentication,
+  rate limiting, advanced routing), and no tested RDS restore (see "Not implemented").
 - The `realworld_app` and `realworld_migrator` passwords are not rotated automatically. Prod: Secrets Manager rotation
   with alternating users; Reloader already rolls the pods when their Secret changes.
 - Observability has no alert delivery, no platform alerts or metrics, and Grafana in the same cluster it watches
