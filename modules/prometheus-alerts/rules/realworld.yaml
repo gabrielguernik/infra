@@ -12,22 +12,25 @@ groups:
       - alert: RealworldHighErrorRate
         # More than 5% of requests to the API's load balancer answered with a 5xx, by the ALB itself (no ready pod,
         # timeouts) or by the API, while there is real traffic (> 30 requests in 5 minutes), so an idle API with one
-        # failed request doesn't page. ALB-generated 5xx aren't part of RequestCount, so they're added to the total.
+        # failed request doesn't page. The ALB's 503s when no target is available aren't part of RequestCount, so ELB
+        # 5xx are added to the total (its 502/504 are then counted twice, which slightly understates the ratio).
         # The series are per-minute CloudWatch sums (job integrations/cloudwatch), hence sum_over_time.
+        # Every term falls back to 0: CloudWatch only lists a metric that had datapoints in the last two weeks, so on a
+        # new ALB the 5xx series don't exist yet, and a + b with a missing side would return nothing, never alerting.
         expr: |
           (
-            sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m]))
-            + sum(sum_over_time(aws_applicationelb_httpcode_target_5_xx_count_sum[5m]))
+            (sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m])) or vector(0))
+            + (sum(sum_over_time(aws_applicationelb_httpcode_target_5_xx_count_sum[5m])) or vector(0))
           )
           /
           (
-            sum(sum_over_time(aws_applicationelb_request_count_sum[5m]))
-            + sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m]))
+            (sum(sum_over_time(aws_applicationelb_request_count_sum[5m])) or vector(0))
+            + (sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m])) or vector(0))
           ) > 0.05
           and
           (
-            sum(sum_over_time(aws_applicationelb_request_count_sum[5m]))
-            + sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m]))
+            (sum(sum_over_time(aws_applicationelb_request_count_sum[5m])) or vector(0))
+            + (sum(sum_over_time(aws_applicationelb_httpcode_elb_5_xx_count_sum[5m])) or vector(0))
           ) > 30
         for: 5m
         labels:

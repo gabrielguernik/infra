@@ -20,12 +20,10 @@ stacks = {
     ssm_write_prefix = "/shared/us-east-1/shared-regional"
   }
   account-baseline = {
-    state_prefix     = "accounts/sandbox/_global/account-baseline"
-    ssm_write_prefix = "/account/_global/account-baseline"
+    state_prefix = "accounts/sandbox/_global/account-baseline"
   }
   regional-baseline = {
-    state_prefix     = "accounts/sandbox/us-east-1/regional-baseline"
-    ssm_write_prefix = "/account/us-east-1/regional-baseline"
+    state_prefix = "accounts/sandbox/us-east-1/regional-baseline"
   }
   dns = {
     state_prefix      = "envs/sandbox/_global/dns"

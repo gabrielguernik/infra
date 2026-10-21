@@ -14,9 +14,9 @@ module "edge" {
   source = "../../../../../modules/edge"
 
   name       = "${var.env}-${var.region}"
-  domain     = nonsensitive(data.aws_ssm_parameter.zone_name.value)
-  zone_id    = nonsensitive(data.aws_ssm_parameter.zone_id.value)
-  vpc_id     = nonsensitive(data.aws_ssm_parameter.vpc_id.value)
+  domain     = data.aws_ssm_parameter.zone_name.insecure_value
+  zone_id    = data.aws_ssm_parameter.zone_id.insecure_value
+  vpc_id     = data.aws_ssm_parameter.vpc_id.insecure_value
   enable_waf = var.enable_waf
 }
 

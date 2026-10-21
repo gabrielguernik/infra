@@ -382,12 +382,12 @@ resource "aws_iam_role" "node" {
   assume_role_policy = data.aws_iam_policy_document.node_assume.json
 }
 
-# No AmazonEKS_CNI_Policy here: the CNI has its own IRSA role.
+# No AmazonEKS_CNI_Policy here: the CNI has its own IRSA role. No AmazonSSMManagedInstanceCore either: nodes are not
+# an entry point (no Session Manager shell on them); the bastion is the only one.
 resource "aws_iam_role_policy_attachment" "node" {
   for_each = toset([
     "AmazonEKSWorkerNodePolicy",
     "AmazonEC2ContainerRegistryPullOnly",
-    "AmazonSSMManagedInstanceCore",
   ])
 
   role       = aws_iam_role.node.name
@@ -455,6 +455,8 @@ resource "aws_eks_node_group" "system" {
   capacity_type   = "ON_DEMAND"
   instance_types  = [var.node_instance_type]
 
+  # Terraform owns desired_size (= min) while there is no autoscaler. With Karpenter or Cluster Autoscaler, ignore
+  # changes to it instead.
   scaling_config {
     min_size     = var.node_min_size
     desired_size = var.node_min_size
@@ -479,10 +481,6 @@ resource "aws_eks_node_group" "system" {
     aws_eks_addon.vpc_cni,
     aws_eks_addon.kube_proxy,
   ]
-
-  lifecycle {
-    ignore_changes = [scaling_config[0].desired_size] # owned by autoscaling once running
-  }
 }
 
 # --- Outputs -----------------------------------------------------------------------

@@ -15,8 +15,8 @@ module "data" {
 
   name              = "${var.env}-${var.region}"
   env               = var.env
-  vpc_id            = nonsensitive(data.aws_ssm_parameter.vpc_id.value)
-  subnet_ids        = split(",", nonsensitive(data.aws_ssm_parameter.private_data_subnet_ids.value))
+  vpc_id            = data.aws_ssm_parameter.vpc_id.insecure_value
+  subnet_ids        = split(",", data.aws_ssm_parameter.private_data_subnet_ids.insecure_value)
   db_instance_class = var.db_instance_class
   cache_node_type   = var.cache_node_type
   rds_multi_az      = var.rds_multi_az

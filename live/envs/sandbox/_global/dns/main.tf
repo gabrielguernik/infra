@@ -9,8 +9,8 @@ data "aws_ssm_parameter" "parent_zone_name" {
 module "zone" {
   source = "../../../../../modules/dns-subzone"
 
-  name           = "${var.env}.${nonsensitive(data.aws_ssm_parameter.parent_zone_name.value)}"
-  parent_zone_id = nonsensitive(data.aws_ssm_parameter.parent_zone_id.value)
+  name           = "${var.env}.${data.aws_ssm_parameter.parent_zone_name.insecure_value}"
+  parent_zone_id = data.aws_ssm_parameter.parent_zone_id.insecure_value
 }
 
 module "outputs" {

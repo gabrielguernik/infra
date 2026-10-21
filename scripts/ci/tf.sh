@@ -2,13 +2,15 @@
 # Terraform CI helpers, used by .github/workflows/terraform-*.yml. Runs on GitHub-hosted runners: needs terraform,
 # aws, jq, gh, and the job permission `id-token: write`.
 #
-#   tf.sh plan  <stack> <plan|apply|drift>   init + plan with the stack's plan role (read-only, -lock=false); writes
-#                                            $OUT/<stack>/{plan.txt,changes.json,summary.txt,status}
+#   tf.sh plan  <stack> [--drift]            init + plan with the stack's plan role (read-only, -lock=false); writes
+#                                            $OUT/<stack>/{plan.txt,changes.json,summary.txt,status}. --drift: a stack
+#                                            with an empty state is "not-deployed" instead of planned
 #   tf.sh apply <stack> <reviewed-dir>       with the stack's apply role: init, plan (locked), compare the resource
 #                                            changes with <reviewed-dir>/<stack>/changes.json, apply if they match
 #   tf.sh comment <stack> <pr-number>        create or update the PR comment with the stack's plan
+#   tf.sh details <stack> <max-bytes>        the stack's plan as collapsed, HTML-escaped markdown (summaries, issues)
 #
-# Local dry run with your own credentials: TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=<id> scripts/ci/tf.sh plan <stack> plan
+# Local dry run with your own credentials: TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=<id> scripts/ci/tf.sh plan <stack>
 #
 # status is one of: changes, no-changes, failed, not-deployed (drift: empty state).
 set -euo pipefail
@@ -65,17 +67,33 @@ normalize() {
   }'
 }
 
+# Records a failed plan: status, summary and an empty change list, so reports and comments always show it.
+fail() {
+  local out="$1" summary="$2"
+  echo "failed" >"$out/status"; echo "$summary" >"$out/summary.txt"
+  echo '{"resources":[],"outputs":[]}' >"$out/changes.json"
+}
+
+# The plan text, truncated and HTML-escaped inside <pre>: plan content (a tag value with backticks or HTML) can't
+# close the block and hide or fake the rest of what the reviewer approves.
+details() {
+  local stack="$1" max="$2" file="$OUT/$1/plan.txt"
+  echo "<details><summary>Plan of <code>${stack}</code></summary><pre>"
+  head -c "$max" "$file" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+  if [[ $(wc -c <"$file") -gt $max ]]; then echo "... (truncated: see the run log)"; fi
+  echo "</pre></details>"
+}
+
 summary_line() {
   jq -r '"\([.resources[] | select(.actions | index("create"))] | length) to add, \([.resources[] | select(.actions == ["update"])] | length) to change, \([.resources[] | select(.actions | index("delete"))] | length) to destroy" + (if (.outputs | length) > 0 then ", \(.outputs | length) output(s) changed" else "" end)' "$1"
 }
 
 cmd_plan() {
-  local stack="$1" mode="$2" dir out rc=0
+  local stack="$1" mode="${2:-}" dir out list rc=0
   dir="$(stack_dir "$stack")"
   out="$OUT/$stack"; mkdir -p "$out"
   # Failed until proven otherwise, so the PR comment and reports show a failure at any step.
-  echo "failed" >"$out/status"; echo "plan failed (see the run log)" >"$out/summary.txt"
-  echo '{"resources":[],"outputs":[]}' >"$out/changes.json"
+  fail "$out" "plan failed (see the run log)"
   if ! assume "tf-${stack}-plan" >"$out/plan.txt" 2>&1; then
     cat "$out/plan.txt"; echo "::error title=$stack::$(tail -1 "$out/plan.txt")"; return 1
   fi
@@ -84,18 +102,22 @@ cmd_plan() {
   if ! init "$dir" >"$out/plan.txt" 2>&1; then endlog; cat "$out/plan.txt"; echo "::error title=$stack::terraform init failed"; return 1; fi
   endlog
 
-  if [[ "$mode" == drift ]] && [[ -z "$(terraform -chdir="$dir" state list 2>/dev/null)" ]]; then
-    echo "not-deployed" >"$out/status"; echo "not deployed (empty state)" >"$out/summary.txt"; : >"$out/plan.txt"
-    echo '{"resources":[],"outputs":[]}' >"$out/changes.json"
-    echo "$stack: not deployed"; return 0
+  if [[ "$mode" == --drift ]]; then
+    # An error reading the state is a failure, not an empty state: otherwise a broken role would hide real drift.
+    if ! list="$(terraform -chdir="$dir" state list 2>"$out/plan.txt")"; then
+      cat "$out/plan.txt"; echo "::error title=$stack::terraform state list failed"; return 1
+    fi
+    if [[ -z "$list" ]]; then
+      echo "not-deployed" >"$out/status"; echo "not deployed (empty state)" >"$out/summary.txt"; : >"$out/plan.txt"
+      echo "$stack: not deployed"; return 0
+    fi
   fi
 
   log "plan $stack"
   terraform -chdir="$dir" plan -input=false -no-color -lock=false -detailed-exitcode -out=tfplan >"$out/plan.log" 2>&1 || rc=$?
   endlog
   if [[ $rc -eq 1 ]]; then
-    echo "failed" >"$out/status"; echo "plan failed" >"$out/summary.txt"
-    cp "$out/plan.log" "$out/plan.txt"; echo '{"resources":[],"outputs":[]}' >"$out/changes.json"
+    fail "$out" "plan failed"; cp "$out/plan.log" "$out/plan.txt"
     cat "$out/plan.log"; echo "::error title=$stack::terraform plan failed"
     return 1
   fi
@@ -124,11 +146,11 @@ cmd_apply() {
   terraform -chdir="$dir" show -json tfplan | normalize >"$out/changes.json"
 
   # The approval covered the reviewed plan. If anything differs now (state changed meanwhile, or an upstream stack
-  # applied earlier in this run changed the outputs this stack reads), stop: re-running the workflow produces a new
-  # plan to review.
+  # applied earlier in this run changed the outputs this stack reads), stop. Re-running this run compares with the
+  # same reviewed plan and fails again: a person reviews a new run's plans instead.
   if ! diff -u "$reviewed" "$out/changes.json" >"$out/diff.txt"; then
     cat "$out/diff.txt"
-    echo "::error title=$stack::the plan changed since it was reviewed (diff above). Re-run the workflow to review the new plan."
+    echo "::error title=$stack::the plan changed since it was reviewed (diff above). Review the plans of a new terraform-apply run (Run workflow, apply=false), then run it with apply=true."
     rm -f "$dir/tfplan"; return 1
   fi
   if [[ $rc -eq 0 ]]; then echo "$stack: no changes, nothing to apply"; rm -f "$dir/tfplan"; return 0; fi
@@ -147,15 +169,12 @@ cmd_comment() {
     echo "$marker"
     echo "### ${icon} \`${stack}\`: $(cat "$dir/summary.txt")"
     if [[ "$status" != no-changes ]]; then
-      echo; echo "<details><summary>Plan</summary>"; echo; echo '```hcl'
-      # GitHub comments are limited to 65536 characters.
-      head -c 60000 "$dir/plan.txt"; [[ $(wc -c <"$dir/plan.txt") -gt 60000 ]] && echo "... (truncated: see the run log)"
-      echo '```'; echo; echo "</details>"
+      echo; details "$stack" 50000 # GitHub comments are limited to 65536 characters, escaping included
     fi
     echo; echo "<sub>Commit ${GITHUB_SHA:0:7} · [run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) · read-only plan role, \`-lock=false\`</sub>"
   )"
   id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr}/comments" --paginate \
-    --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" | head -1)"
+    --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"${marker}\"))) | .id" | head -1)"
   if [[ -n "$id" ]]; then
     gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${id}" -f body="$body" >/dev/null
   else
@@ -164,8 +183,9 @@ cmd_comment() {
 }
 
 case "${1:-}" in
-  plan) cmd_plan "${2:?stack}" "${3:-plan}" ;;
+  plan) cmd_plan "${2:?stack}" "${3:-}" ;;
   apply) cmd_apply "${2:?stack}" "${3:?reviewed dir}" ;;
   comment) cmd_comment "${2:?stack}" "${3:?pr number}" ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  details) details "${2:?stack}" "${3:?max bytes}" ;;
+  *) sed -n '2,17p' "$0"; exit 2 ;;
 esac

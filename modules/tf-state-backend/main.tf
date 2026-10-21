@@ -113,7 +113,8 @@ data "aws_iam_policy_document" "bucket" {
     }
   }
 
-  # One deny per CI role: any object outside its own prefix is off limits.
+  # One deny per CI role: any object outside its own prefix is off limits, including older versions of it
+  # (GetObjectVersion) and its ACLs and attributes: plan roles have ReadOnlyAccess, which allows s3:Get* everywhere.
   # The prefix also covers the .tflock lockfile next to the state object.
   dynamic "statement" {
     for_each = var.prefix_restrictions
@@ -121,7 +122,7 @@ data "aws_iam_policy_document" "bucket" {
     content {
       sid           = "Deny${replace(title(replace(statement.key, "-", " ")), " ", "")}OutsideOwnPrefix"
       effect        = "Deny"
-      actions       = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      actions       = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*", "s3:RestoreObject"]
       not_resources = ["${aws_s3_bucket.this.arn}/${statement.value.prefix}/*"]
 
       principals {

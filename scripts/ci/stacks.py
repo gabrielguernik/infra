@@ -10,9 +10,10 @@ that creates each stack's CI roles and state prefix (state_prefix = the stack's 
   stacks.py path <stack>              the stack's folder
 
 A stack is affected only when a file in its folder changes, or in a module it calls (modules/<name>, referenced by
-relative source). Stacks that read its SSM outputs are not: they pick up new values on their next change, and the
-daily drift plan reports them meanwhile. Changes to the CI itself (workflows, scripts/ci, .terraform-version) affect
-every stack. `affected` also reports "bootstrap": true when the bootstrap stack changed (CI never applies it).
+relative source, including modules those modules call). Stacks that read its SSM outputs are not: they pick up new
+values on their next change, and the daily drift plan reports them meanwhile. Changes to the CI itself (workflows,
+scripts/ci, .terraform-version) affect every stack. `affected` also reports "bootstrap": true when the bootstrap
+stack changed (CI never applies it).
 """
 import json
 import os
@@ -43,16 +44,18 @@ def stacks():
     return result
 
 
-def modules_of(folder):
-    """Module names (modules/<name>) a stack folder calls."""
-    names = set()
+def modules_of(folder, seen=None):
+    """Module names (modules/<name>) a folder calls by relative path, including modules called by those modules."""
+    seen = set() if seen is None else seen
     for f in os.listdir(os.path.join(ROOT, folder)):
         if f.endswith(".tf"):
-            for src in re.findall(r'source\s*=\s*"([^"]+)"', open(os.path.join(ROOT, folder, f)).read()):
-                m = re.search(r"(?:^|/)modules/([\w-]+)", src)
-                if m:
-                    names.add(m.group(1))
-    return names
+            for src in re.findall(r'source\s*=\s*"(\.\.?/[^"]+)"', open(os.path.join(ROOT, folder, f)).read()):
+                target = os.path.normpath(os.path.join(folder, src))
+                m = re.fullmatch(r"modules/([\w-]+)", target)
+                if m and m.group(1) not in seen:
+                    seen.add(m.group(1))
+                    modules_of(target, seen)
+    return seen
 
 
 def affected(files):

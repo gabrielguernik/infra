@@ -1,18 +1,21 @@
 # Merges to main: plan the affected stacks (read-only) and apply them in order, if what would be applied is exactly
 # what was reviewed.
 #
-#   plan   affected = stacks whose folder or modules changed since the last successful apply (tag applied/sandbox).
+#   plan   only for main's current tip: an older commit (a re-run of an old run, a run queued behind a newer push)
+#          is refused, so it can't apply older code over newer.
+#          affected = stacks whose folder or modules changed since the last successful apply (tag applied/sandbox).
 #          Read-only plans with ci/tf-<stack>-plan, shown in the run summary.
-#          Approval: on a push, the merged PR's plans (artifacts pr-plan-<stack> of its terraform-pr run) are the
-#          reviewed plans. Every affected stack's plan here must match its PR plan; otherwise (no PR, a stack not
+#          Approval: on a push, the merged PR's plans (artifacts pr-plan-<stack> of the PR's latest terraform-pr run
+#          for its last commit, which must have succeeded) are the reviewed plans. Every affected stack's plan here must match its PR plan; otherwise (no PR, a stack not
 #          planned in the PR, a different plan) nothing is applied, and someone reviews this run's plans and starts
 #          the workflow by hand with apply=true. On a manual run, apply=true is the approval.
 #   apply  environment "sandbox" (deployment branch main; the only place ci/tf-<stack> trusts). For each affected
 #          stack, in apply order, with ci/tf-<stack>: plan again with the state lock, compare the resource changes with
 #          this run's plan, and apply only if identical. A difference (state changed meanwhile, or new outputs of an
-#          upstream stack applied just before) stops the run for a new review.
-#   tag    moves applied/sandbox to this commit once everything applied, so a failed, skipped or cancelled run can't
-#          make a later run skip its stacks.
+#          upstream stack applied just before) stops the run; a person reviews a new run's plans (re-running this run
+#          would compare with the same plans again). The commit must still be main's tip.
+#   tag    moves applied/sandbox forward to this commit once everything applied, so a failed, skipped or cancelled run
+#          can't make a later run skip its stacks.
 #
 # The GitHub plan of this repo has no required reviewers for environments in private repos. With GitHub Team or
 # Enterprise, add required reviewers to the "sandbox" environment: the apply job then also waits for a person.
@@ -44,7 +47,8 @@ on:
 permissions:
   contents: read
 
-# One apply at a time, queued, never cancelled mid-apply.
+# One apply at a time, never cancelled mid-apply. GitHub keeps one pending run per group: a newer push replaces an
+# older pending run, and covers its stacks because "affected" is measured from the applied/sandbox tag.
 concurrency:
   group: terraform-sandbox
   cancel-in-progress: false
@@ -72,6 +76,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # history and tags: the diff since the last apply
+          persist-credentials: false
+      - name: main's current tip only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/main-tip.sh
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version_file: .terraform-version
@@ -111,12 +120,11 @@ jobs:
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           failed=0
           for s in $(jq -r '.[]' <<<"$STACKS"); do
-            scripts/ci/tf.sh plan "$s" apply || failed=1
+            scripts/ci/tf.sh plan "$s" || failed=1
             {
               echo "### \`$s\`: $(cat ".tf-ci/$s/summary.txt")"
-              if [ "$(cat ".tf-ci/$s/status")" != no-changes ]; then
-                echo "<details><summary>plan</summary>"; echo; echo '```hcl'; head -c 150000 ".tf-ci/$s/plan.txt"; echo '```'; echo "</details>"
-              fi
+              # 12 stacks x 60 KB stay under the 1 MiB step summary limit.
+              if [ "$(cat ".tf-ci/$s/status")" != no-changes ]; then scripts/ci/tf.sh details "$s" 60000; fi
             } >>"$GITHUB_STEP_SUMMARY"
           done
           changed="$(for s in $(jq -r '.[]' <<<"$STACKS"); do [ "$(cat ".tf-ci/$s/status")" = changes ] && echo "$s"; done | jq -Rsc 'split("\n") | map(select(. != ""))')"
@@ -140,11 +148,15 @@ jobs:
           fi
           pr="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty')"
           [ -n "$pr" ] || approve false "**not applied**: $GITHUB_SHA didn't come from a merged pull request. Review this run's plans, then run the workflow with apply=true."
-          head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)"
-          run="$(gh run list --workflow terraform-pr.yml --commit "$head" --json databaseId,conclusion \
-            --jq '[.[] | select(.conclusion == "success")][0].databaseId // empty')"
-          [ -n "$run" ] || approve false "**not applied**: no successful terraform-pr run for PR #$pr at ${head:0:7}. Review this run's plans, then run the workflow with apply=true."
-          gh run download "$run" --pattern 'pr-plan-*' --dir pr-reviewed || true
+          read -r head branch base < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '"\(.head.sha) \(.head.ref) \(.base.ref)"')
+          [ "$base" = main ] || approve false "**not applied**: PR #$pr targets $base, not main."
+          # The PR's latest terraform-pr run for its last commit: what its comments showed when it was merged. It must
+          # have succeeded; an older successful run doesn't count.
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/terraform-pr.yml/runs?event=pull_request&head_sha=$head&per_page=50" \
+            --jq "[.workflow_runs[] | select(.head_branch == \"$branch\" and .status == \"completed\")] | sort_by(.run_number) | last // empty | \"\(.id) \(.conclusion)\"")"
+          read -r run conclusion <<<"$latest"
+          [ "${conclusion:-}" = success ] || approve false "**not applied**: the latest terraform-pr run of PR #$pr at ${head:0:7} didn't succeed (${conclusion:-none}). Review this run's plans, then run the workflow with apply=true."
+          gh run download "$run" --pattern 'pr-plan-*' --dir pr-reviewed
           for s in $(jq -r '.[]' <<<"$STACKS"); do
             reviewed="pr-reviewed/pr-plan-$s/changes.json"
             if [ ! -f "$reviewed" ]; then
@@ -173,6 +185,12 @@ jobs:
       id-token: write # OIDC → ci/tf-<stack>
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: main's current tip only, again (this job can be re-run on its own)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/main-tip.sh
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version_file: .terraform-version
@@ -209,8 +227,14 @@ jobs:
       contents: write # move the applied/sandbox tag
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the tag's current commit
       - name: move ${{ env.APPLIED_TAG }}
         run: |
+          # Forward only: never back to an older commit.
+          if old="$(git rev-parse -q --verify "refs/tags/$APPLIED_TAG")" && ! git merge-base --is-ancestor "$old" "$GITHUB_SHA"; then
+            echo "::warning::$APPLIED_TAG (${old:0:7}) is not an ancestor of ${GITHUB_SHA:0:7}: not moved"; exit 0
+          fi
           git tag -f "$APPLIED_TAG" "$GITHUB_SHA"
           git push -f origin "refs/tags/$APPLIED_TAG"
           echo "\`$APPLIED_TAG\` → ${GITHUB_SHA:0:7}" >>"$GITHUB_STEP_SUMMARY"

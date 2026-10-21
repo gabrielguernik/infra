@@ -17,7 +17,7 @@ provider "aws" {
     tags = {
       Project     = "realworld"
       Environment = "account"
-      Region      = "us-east-1"
+      Region      = var.region
       Stack       = "regional-baseline"
       ManagedBy   = "terraform"
       Repo        = "gabrielguernik/infra"

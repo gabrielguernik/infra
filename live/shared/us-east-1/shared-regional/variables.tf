@@ -4,6 +4,6 @@ variable "account_id" {
 }
 
 variable "region" {
-  description = "Provider region. Global stacks use the primary region."
+  description = "Provider region."
   type        = string
 }

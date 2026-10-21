@@ -16,7 +16,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project     = "realworld"
-      Environment = "sandbox"
+      Environment = var.env
       Region      = "global"
       Stack       = "dns"
       ManagedBy   = "terraform"

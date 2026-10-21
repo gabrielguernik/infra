@@ -63,8 +63,6 @@ locals {
   # Secrets Manager appends a random 6-character suffix to secret ARNs.
   role_secrets = ["${local.secret_arn_prefix}/db-app-??????", "${local.secret_arn_prefix}/db-migrator-??????"]
 
-  log_group_arn = trimsuffix(var.log_group_arn, ":*")
-
   roles = {
     aws-load-balancer-controller = {
       service_account = "kube-system:aws-load-balancer-controller"
@@ -183,14 +181,14 @@ locals {
             # CloudWatch metrics have no resource-level permissions.
             Sid      = "ReadCloudWatchMetrics"
             Effect   = "Allow"
-            Action   = ["cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmsForMetric", "cloudwatch:GetInsightRuleReport"]
+            Action   = ["cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics"]
             Resource = "*"
           },
           {
             Sid      = "QueryContainerLogs"
             Effect   = "Allow"
             Action   = ["logs:StartQuery", "logs:GetLogEvents", "logs:GetLogGroupFields", "logs:FilterLogEvents"]
-            Resource = [local.log_group_arn, "${local.log_group_arn}:*"]
+            Resource = [var.log_group_arn, "${var.log_group_arn}:*"]
           },
           {
             Sid      = "LogsUnscoped"
@@ -199,10 +197,11 @@ locals {
             Resource = "*"
           },
           {
-            # Used by the CloudWatch data source to list resources and regions in its query editor.
+            # Used by the CloudWatch data source to list resources and regions in its query editor. No EC2 instance
+            # lookups: the dashboards cover the ALB, RDS, Valkey and NAT, not instances.
             Sid      = "Discovery"
             Effect   = "Allow"
-            Action   = ["tag:GetResources", "ec2:DescribeRegions", "ec2:DescribeInstances", "ec2:DescribeTags"]
+            Action   = ["tag:GetResources", "ec2:DescribeRegions"]
             Resource = "*"
           },
         ]
@@ -217,13 +216,13 @@ locals {
         Statement = [{
           Sid      = "WriteContainerLogs"
           Effect   = "Allow"
-          Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
-          Resource = [local.log_group_arn, "${local.log_group_arn}:*"]
+          Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+          Resource = [var.log_group_arn, "${var.log_group_arn}:*"]
         }]
       })
     }
 
-    # The monitoring namespace's secrets: Grafana's admin credentials.
+    # The monitoring namespace's secrets: Grafana's admin credentials only (Secrets Manager appends a 6-character suffix).
     secrets-monitoring = {
       service_account = "monitoring:secrets-reader"
       policy = jsonencode({
@@ -232,7 +231,7 @@ locals {
           Sid      = "MonitoringSecrets"
           Effect   = "Allow"
           Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-          Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.env}/monitoring/*"
+          Resource = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.env}/monitoring/grafana-??????"
         }]
       })
     }

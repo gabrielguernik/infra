@@ -20,8 +20,8 @@ provider "aws" {
   default_tags {
     tags = {
       Project     = "realworld"
-      Environment = "sandbox"
-      Region      = "us-east-1"
+      Environment = var.env
+      Region      = var.region
       Stack       = "monitoring"
       ManagedBy   = "terraform"
       Repo        = "gabrielguernik/infra"

@@ -21,9 +21,9 @@ variable "vpc_id" {
   type        = string
 }
 
-variable "vpc_cidr" {
-  description = "VPC CIDR; the bastion may reach the data tier ports inside it."
-  type        = string
+variable "data_cidrs" {
+  description = "CIDRs of the private-data subnets: the only place the bastion may reach PostgreSQL and Valkey."
+  type        = list(string)
 }
 
 variable "subnet_id" {
@@ -94,19 +94,23 @@ resource "aws_vpc_security_group_egress_rule" "https" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "data" {
-  for_each = { postgres = 5432, valkey = 6379 }
+  for_each = {
+    for pair in setproduct(["postgres", "valkey"], var.data_cidrs) : "${pair[0]}-${pair[1]}" => {
+      name = pair[0], port = pair[0] == "postgres" ? 5432 : 6379, cidr = pair[1]
+    }
+  }
 
   security_group_id = aws_security_group.this.id
-  description       = "${each.key} inside the VPC"
-  cidr_ipv4         = var.vpc_cidr
+  description       = "${each.value.name} in the data subnets"
+  cidr_ipv4         = each.value.cidr
   ip_protocol       = "tcp"
-  from_port         = each.value
-  to_port           = each.value
+  from_port         = each.value.port
+  to_port           = each.value.port
 }
 
 # A new Amazon Linux release replaces the instance instead of patching it in place; it holds no state.
 resource "aws_instance" "this" {
-  ami                         = nonsensitive(data.aws_ssm_parameter.ami.value)
+  ami                         = data.aws_ssm_parameter.ami.insecure_value
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [aws_security_group.this.id]

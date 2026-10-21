@@ -17,8 +17,8 @@ module "eks" {
   name                 = local.name
   env                  = var.env
   cluster_version      = var.cluster_version
-  vpc_id               = nonsensitive(data.aws_ssm_parameter.vpc_id.value)
-  subnet_ids           = split(",", nonsensitive(data.aws_ssm_parameter.private_app_subnet_ids.value))
+  vpc_id               = data.aws_ssm_parameter.vpc_id.insecure_value
+  subnet_ids           = split(",", data.aws_ssm_parameter.private_app_subnet_ids.insecure_value)
   admin_principal_arns = var.admin_principal_arns
   node_min_size        = var.node_min_size
 }

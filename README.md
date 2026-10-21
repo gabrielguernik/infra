@@ -118,8 +118,8 @@ of it removed by the destroy above.
 
 Nothing in the environment is reachable from the internet except the ALB. The Kubernetes API, PostgreSQL and Valkey are
 reached through a **Session Manager bastion**: a `t3.micro` in a private subnet with no inbound rules, no public IP and no
-SSH keys. Session Manager forwards a local port through the bastion to the target. Access is granted by IAM and every
-session is recorded in Session Manager's history.
+SSH keys. Session Manager forwards a local port through the bastion to the target. Access is granted by IAM, and every
+session's user, start and end are in Session Manager's history (its content isn't logged).
 
 ```
 laptop:8443  ──SSM──▶ bastion ──▶ EKS private endpoint :443
@@ -265,7 +265,11 @@ docker run --rm -e REDISCLI_AUTH -v "$PWD/AmazonRootCA1.pem:/ca.pem:ro" valkey/v
 ### Security notes
 
 - The bastion has no inbound security group rules, no public IP and no SSH key. The only way in is Session Manager, authorized by IAM.
-- Allowed sessions are restricted to the port-forwarding document, so no interactive shell is available.
+- The CI role is restricted to the port-forwarding document. People with broader IAM permissions (admins) can also open
+  a shell on the bastion. EKS nodes have no Session Manager permissions, so the bastion is the only entry point.
+- The bastion's database egress reaches only the private-data subnets, on 5432 and 6379.
+- A new Amazon Linux release shows as drift on `bastion` (the AMI comes from the latest-AMI parameter). Applying it
+  replaces the instance, which patches it and closes open tunnels.
 - Database and cache credentials come from Secrets Manager into environment variables for one command, and are never written to disk.
 - The gitops pipeline's role `ci/argocd-<cluster>` can only start port-forwarding sessions on the bastion, end its own sessions, describe the cluster, and read the ArgoCD deploy keys. It is cluster-admin inside Kubernetes (installing ArgoCD creates CRDs and cluster roles), and only jobs in the cluster's GitHub environment can assume it.
 
@@ -384,14 +388,19 @@ The sandbox keeps observability small on purpose. A production setup adds:
    rm $S/terraform.tfstate*
    ```
    CI never applies bootstrap: it creates the roles CI uses.
-3. Apply the remaining stacks in order.
+3. **GitHub environments** (repository settings, not in code), each with deployment branch `main` only: `sandbox` in
+   `infra` (the only subject the `tf-<stack>` write roles trust), `sandbox-us-east-1` in `gitops` (the ArgoCD install
+   role) and `sandbox` in `realworld-app` (the gitops deploy key). Removing that branch rule would let any branch
+   assume these roles.
+4. Apply the remaining stacks in order.
 
 ## State
 
 - Bucket `tfstate-965140467182-us-east-1`: versioning, SSE-S3, Block Public Access, TLS-only, old versions expire after 90 days.
 - Locking with S3 native lockfiles (`use_lockfile = true`), so there is no DynamoDB table.
 - The key equals the stack's folder under `live/`.
-- The bucket policy denies each `tf-<stack>` role every object outside its own prefix, so no CI role can read another stack's state.
+- The bucket policy denies each `tf-<stack>` and `tf-<stack>-plan` role every object outside its own prefix (object
+  versions included), so no CI role can read another stack's state.
 
 ## CI/CD (Terraform)
 
@@ -433,7 +442,7 @@ the CI platform too. After changing a provider version, lock for every platform:
 `terraform -chdir=<stack> providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64`.
 
 **Local dry run** of the CI logic with your own credentials:
-`TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=965140467182 scripts/ci/tf.sh plan <stack> plan`.
+`TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=965140467182 scripts/ci/tf.sh plan <stack>`.
 
 ### Production improvements
 
@@ -467,7 +476,7 @@ GitHub Actions authenticates through OIDC. There are no long-lived keys.
 | Role | Trusted subjects | Can do |
 |---|---|---|
 | `ci/tf-<stack>` | `repo:gabrielguernik/infra`, GitHub environment `sandbox` only (the apply job; deployment branch `main`) | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl` |
-| `ci/tf-<stack>-plan` | `repo:gabrielguernik/infra` on `main` and pull requests | Read-only: AWS `ReadOnlyAccess`, its own state prefix read-only, its own and consumed SSM paths, and the values of the secrets the stack manages (`plan_secrets`: `data`, `monitoring`), which refresh reads |
+| `ci/tf-<stack>-plan` | `repo:gabrielguernik/infra` on `main` and pull requests | Read-only: AWS `ReadOnlyAccess` (which includes every SSM parameter), its own state prefix read-only, and the values of the secrets the stack manages (`plan_secrets`: `data`, `monitoring`), which refresh reads |
 | `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the `realworld-api` ECR repo |
 | `ci/argocd-<cluster>` | `repo:gabrielguernik/gitops`, GitHub environment `<cluster>` only | Port forwarding through the bastion to the cluster API, `eks:DescribeCluster`, read `<env>/argocd/*` secrets; cluster-admin access entry in `eks` |
 | `ci/gitops-check` | `repo:gabrielguernik/gitops` on `main` and pull requests | Read-only: describe the VPCs, security groups, IRSA roles, secret metadata, RDS instances, certificates, AMP workspaces and log groups that gitops references |
@@ -507,7 +516,7 @@ CI runs these on every pull request (`terraform-pr`); locally:
 terraform fmt -recursive -check
 tflint --init && tflint --recursive --minimum-failure-severity=warning
 trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml .
-pre-commit run -a   # fmt, validate, tflint, checkov
+pre-commit run -a   # the same checks, from .pre-commit-config.yaml
 ```
 
 ## Log archive cost
@@ -656,6 +665,12 @@ account, and Multi-AZ (`rds_multi_az`).
 - No IAM password policy; the account's password rules are left to its owner. CI never uses passwords or keys (OIDC roles only).
 - The log archive bucket has no S3 server access logging of its own.
 - The CI roles for network and edge use broad `ec2:*` / `acm:*` / `wafv2:*` service actions; instance launches are denied for `tf-network`.
+- Any pull request can assume the `tf-<stack>-plan` roles, so a PR author can read the `plan_secrets` of `data` and
+  `monitoring` (DB role passwords, JWT key, Valkey token, Grafana admin password), which the plans need because these
+  values are in state. Prod: keep secrets out of state (see "CI/CD" → "Production improvements").
+- `tf-eks`, `tf-bastion` and `tf-platform` create IAM roles under their paths without a permissions boundary, so the
+  apply job of those stacks could create a role with more rights than its own. Prod: a boundary required on every role
+  they create.
 - One account and one region stand in for a multi-account, multi-region organization.
 - No autoscaling, PodDisruptionBudgets, NetworkPolicies, canary releases or Gateway API ingress proxy (authentication,
   rate limiting, advanced routing), and no tested RDS restore (see "Not implemented").
