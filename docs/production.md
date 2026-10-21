@@ -128,9 +128,21 @@ The sandbox keeps observability small on purpose. A production setup adds:
   - the Grafana Operator, with dashboards, folders and data sources as Kubernetes resources;
   - dashboards written as code (Grafonnet/Jsonnet or the Grafana Foundation SDK), so reviews are readable;
   - a central Grafana that syncs UI edits back to Git.
-- **Distributed tracing with Tempo.** The API instrumented with the OpenTelemetry Node SDK (HTTP, Express and Prisma
-  spans), sent to Alloy, which forwards them to Tempo (object storage in S3). Grafana links traces to logs by trace ID
-  (logged next to `reqId`) and to metrics through exemplars.
+- **Distributed tracing with Tempo.** Spans (HTTP, Express, Prisma, Valkey) go to Alloy, which forwards them to Tempo
+  (object storage in S3). Grafana links traces to logs by trace ID (logged next to `reqId`) and to metrics through
+  exemplars.
+- **Instrumentation outside the application, with the OpenTelemetry Operator.**
+  - The operator runs as a platform Application.
+  - An `Instrumentation` resource per cluster sets the exporter endpoint (Alloy), sampling and resource attributes
+    (cluster, namespace, version).
+  - The app chart adds one annotation, `instrumentation.opentelemetry.io/inject-nodejs: "true"`. The operator's
+    webhook then injects the Node auto-instrumentation into the pod (an init container plus `NODE_OPTIONS`), with no
+    SDK in the code.
+  - The app's own metrics code (prom-client histogram and `/metrics`) is replaced by the OpenTelemetry HTTP metrics,
+    and the dashboards and the latency alert are rewritten on those metric names.
+  - The platform team then owns and upgrades instrumentation centrally, and every service emits the same telemetry.
+    Trade-off: the webhook is on the pod-creation path, and auto-instrumentation can't add business-level spans; a
+    service that needs them adds the OpenTelemetry API on top.
 
 ## Terraform CI/CD
 

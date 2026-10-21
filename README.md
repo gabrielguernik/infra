@@ -188,8 +188,10 @@ outages the app never sees), and **p95 latency above 500 ms**. Both were verifie
 - **Platform alerts and metrics:** nodes, pods, ArgoCD, External Secrets, RDS, Valkey, certificates.
 - **Grafana outside the cluster it watches** (Amazon Managed Grafana or a management cluster).
 - **Loki as log storage,** shared by all clusters and linked to metrics in Grafana, instead of CloudWatch Logs.
-- **Distributed tracing with Tempo:** the app instrumented with OpenTelemetry, traces sent through Alloy, and linked
-  to logs (request ID) and metrics in Grafana.
+- **Distributed tracing with Tempo:** traces sent through Alloy, and linked to logs (request ID) and metrics in Grafana.
+- **Instrumentation outside the application,** with the OpenTelemetry Operator: an `Instrumentation` resource and a pod
+  annotation inject Node auto-instrumentation (traces and metrics) at deploy time. The app's in-code metrics move
+  out, so every service gets the same telemetry with no code changes or SDK upgrades in each repo.
 - **Audit and detection:** CloudTrail, GuardDuty and Security Hub, organization-wide.
 - **WAF** on the ALB: the `edge` module supports it (`enable_waf`), off here for cost.
 - **Automatic secret rotation** (Secrets Manager rotation with alternating users) and the Valkey auth token out of
