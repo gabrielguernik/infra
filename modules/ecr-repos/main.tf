@@ -16,9 +16,9 @@ variable "repositories" {
 }
 
 variable "keep_tagged_images" {
-  description = "Number of tagged images to keep per repository."
+  description = "Number of tagged images to keep per repository. Each app release pushes two (<sha> and migrate-<sha>), so 60 keeps about 30 releases."
   type        = number
-  default     = 30
+  default     = 60
 }
 
 variable "untagged_expiry_days" {

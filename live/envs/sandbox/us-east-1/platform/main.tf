@@ -32,12 +32,12 @@ module "platform" {
 
   name              = local.name
   env               = var.env
-  oidc_provider_arn = nonsensitive(data.aws_ssm_parameter.oidc_provider_arn.value)
-  oidc_issuer       = nonsensitive(data.aws_ssm_parameter.oidc_issuer.value)
-  zone_id           = nonsensitive(data.aws_ssm_parameter.zone_id.value)
-  db_instance_arn   = nonsensitive(data.aws_ssm_parameter.db_instance_arn.value)
-  amp_workspace_arn = nonsensitive(data.aws_ssm_parameter.amp_workspace_arn.value)
-  log_group_arn     = nonsensitive(data.aws_ssm_parameter.log_group_arn.value)
+  oidc_provider_arn = data.aws_ssm_parameter.oidc_provider_arn.insecure_value
+  oidc_issuer       = data.aws_ssm_parameter.oidc_issuer.insecure_value
+  zone_id           = data.aws_ssm_parameter.zone_id.insecure_value
+  db_instance_arn   = data.aws_ssm_parameter.db_instance_arn.insecure_value
+  amp_workspace_arn = data.aws_ssm_parameter.amp_workspace_arn.insecure_value
+  log_group_arn     = data.aws_ssm_parameter.log_group_arn.insecure_value
 }
 
 module "outputs" {

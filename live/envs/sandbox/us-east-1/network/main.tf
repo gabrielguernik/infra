@@ -14,7 +14,7 @@ module "network" {
   cluster_name               = local.name
   single_nat_gateway         = var.single_nat_gateway
   enable_interface_endpoints = var.enable_interface_endpoints
-  flow_log_destination_arn   = "${nonsensitive(data.aws_ssm_parameter.log_bucket_arn.value)}/vpc-flow-logs/${var.env}/${var.region}"
+  flow_log_destination_arn   = "${data.aws_ssm_parameter.log_bucket_arn.insecure_value}/vpc-flow-logs/${var.env}/${var.region}"
 }
 
 module "outputs" {

@@ -1,5 +1,7 @@
-# Applied by an admin only, never by CI: it creates the roles CI uses.
-# First apply runs with local state; see README "Bootstrap" for the migration to S3.
+# The CI roles, the state bucket and the GitHub OIDC provider. Applied by CI like every other stack (role
+# ci/tf-bootstrap, first in apply order), except the very first apply: an admin runs it by hand with local state,
+# because the roles CI uses don't exist yet (README "Setup from zero"). ci/tf-bootstrap can rewrite any CI role, so
+# merging a bootstrap change is an admin-level action.
 
 locals {
   state_bucket_name = "tfstate-${var.account_id}-${var.region}"
@@ -12,8 +14,10 @@ locals {
   # Terraform CI (infra repo, .github/workflows/terraform-*.yml). Two roles per stack:
   # - tf-<stack>:      writes. Trusted only from jobs in the GitHub environment "<env>" (deployment branch main, and
   #                    the approval gate), whose OIDC subject is ...:environment:<env>. A pull request can't reach it.
-  # - tf-<stack>-plan: read-only (ReadOnlyAccess, its state read-only, the stack's secret values for refresh). Used by
-  #                    PR plans, the plan before the gate on main, and the drift check. Plans run with -lock=false.
+  # - tf-<stack>-plan: read-only (ReadOnlyAccess, which includes every SSM parameter; its state read-only, the bucket
+  #                    policy denying every other prefix; the stack's secret values for refresh). Used by PR plans, the
+  #                    plan before the gate on main, and the drift check. Plans run with -lock=false.
+  #                    Every pull request can assume these roles, so PR authors can read plan_secrets (README).
   tf_roles = {
     for name, s in var.stacks : "tf-${name}" => {
       github_subjects   = ["${local.infra_prefix}:environment:${var.env}"]
@@ -30,7 +34,6 @@ locals {
       managed_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
       state_prefix        = s.state_prefix
       state_read_only     = true
-      ssm_read_prefixes   = concat([s.ssm_write_prefix], s.ssm_read_prefixes)
       secret_read_arns    = [for p in s.plan_secrets : "arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${p}"]
     }
   }
@@ -58,14 +61,15 @@ locals {
 
   # The gitops pipeline's install job runs in a GitHub environment named after the cluster, so the OIDC subject is
   # ...:environment:<cluster> (not :ref:...). Only jobs that pass that environment's protection rules get the role.
-  # This role assumes clusters are named <env>-<region> of this account's primary region and env.
+  # Clusters of this env, named <env>-<region>; the SSM paths come from that name.
   argocd_roles = {
     for c in var.argocd_clusters : "argocd-${c}" => {
       github_subjects   = ["${local.gitops_prefix}:environment:${c}"]
       policy_template   = "argocd"
+      template_vars     = { cluster_name = c }
       state_prefix      = null
       ssm_write_prefix  = null
-      ssm_read_prefixes = ["/${var.env}/${var.region}/eks", "/${var.env}/${var.region}/bastion"]
+      ssm_read_prefixes = ["/${var.env}/${trimprefix(c, "${var.env}-")}/eks", "/${var.env}/${trimprefix(c, "${var.env}-")}/bastion"]
     }
   }
 }
@@ -89,7 +93,7 @@ module "ci_roles" {
     parent_zone_id = var.parent_zone_id
     env_domain     = "${var.env}.${var.parent_domain}"
     env            = var.env
-    cluster_name   = "${var.env}-${var.region}"
+    cluster_name   = "${var.env}-${var.region}" # argocd roles override it with their own cluster
   }
 }
 

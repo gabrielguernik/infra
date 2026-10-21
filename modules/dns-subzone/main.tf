@@ -21,9 +21,9 @@ variable "parent_zone_id" {
 }
 
 variable "delegation_ttl" {
-  description = "TTL of the NS delegation record. Short while building, 172800 once stable."
+  description = "TTL of the NS delegation record. 1 hour: the subzone stays up across environment rebuilds; a recreated zone (new name servers) takes at most this long to resolve. 172800 for a zone that never changes."
   type        = number
-  default     = 300
+  default     = 3600
 }
 
 resource "aws_route53_zone" "this" {

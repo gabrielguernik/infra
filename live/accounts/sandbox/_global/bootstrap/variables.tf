@@ -72,7 +72,7 @@ variable "stacks" {
   EOT
   type = map(object({
     state_prefix      = string
-    ssm_write_prefix  = string
+    ssm_write_prefix  = optional(string) # null for stacks that publish nothing
     ssm_read_prefixes = optional(list(string), [])
     plan_secrets      = optional(list(string), [])
   }))

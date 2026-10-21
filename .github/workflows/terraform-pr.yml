@@ -8,6 +8,7 @@ name: terraform-pr
 
 on:
   pull_request:
+    branches: [main] # the apply only trusts plans made against main
     paths:
       - "live/**"
       - "modules/**"
@@ -34,11 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       stacks: ${{ steps.affected.outputs.stacks }}
-      bootstrap: ${{ steps.affected.outputs.bootstrap }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: affected
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
@@ -46,13 +47,14 @@ jobs:
         run: |
           r="$(scripts/ci/stacks.py affected "$BASE" "$HEAD")"
           echo "stacks=$(jq -c .stacks <<<"$r")" >>"$GITHUB_OUTPUT"
-          echo "bootstrap=$(jq -r .bootstrap <<<"$r")" >>"$GITHUB_OUTPUT"
-          echo "Affected stacks: \`$(jq -c .stacks <<<"$r")\`, bootstrap changed: $(jq -r .bootstrap <<<"$r")" >>"$GITHUB_STEP_SUMMARY"
+          echo "Affected stacks: \`$(jq -c .stacks <<<"$r")\`" >>"$GITHUB_STEP_SUMMARY"
 
   static:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config while third-party providers run
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version_file: .terraform-version
@@ -68,11 +70,11 @@ jobs:
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           rc=0
           for dir in $(find live -name '*.tf' -not -path '*/.terraform/*' -exec dirname {} \; | sort -u); do
-            if terraform -chdir="$dir" init -backend=false -input=false -no-color -lockfile=readonly >/dev/null \
-              && terraform -chdir="$dir" validate -no-color >/dev/null; then
+            if { terraform -chdir="$dir" init -backend=false -input=false -no-color -lockfile=readonly \
+                 && terraform -chdir="$dir" validate -no-color; } >/tmp/validate.log 2>&1; then
               echo "ok    $dir"
             else
-              echo "FAIL  $dir"; terraform -chdir="$dir" validate -no-color || true; rc=1
+              echo "FAIL  $dir"; cat /tmp/validate.log; rc=1 # init's or validate's own error
             fi
           done
           exit $rc
@@ -110,6 +112,8 @@ jobs:
     name: plan (${{ matrix.stack }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false # no token in .git/config while third-party providers run
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version_file: .terraform-version
@@ -121,7 +125,7 @@ jobs:
       - name: plan
         env:
           STACK: ${{ matrix.stack }}
-        run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && scripts/ci/tf.sh plan "$STACK" plan
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && scripts/ci/tf.sh plan "$STACK"
       - name: comment
         if: always() && hashFiles(format('.tf-ci/{0}/status', matrix.stack)) != ''
         env:
@@ -130,7 +134,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           scripts/ci/tf.sh comment "$STACK" "$PR"
-          { echo "### \`$STACK\`: $(cat ".tf-ci/$STACK/summary.txt")"; echo '```hcl'; head -c 200000 ".tf-ci/$STACK/plan.txt"; echo '```'; } >>"$GITHUB_STEP_SUMMARY"
+          { echo "### \`$STACK\`: $(cat ".tf-ci/$STACK/summary.txt")"; scripts/ci/tf.sh details "$STACK" 200000; } >>"$GITHUB_STEP_SUMMARY"
       - name: upload the reviewed change list
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -138,29 +142,3 @@ jobs:
           path: .tf-ci/${{ matrix.stack }}/changes.json # resource addresses and actions only; no values
           include-hidden-files: true # .tf-ci is a dot folder; the default skips it in globs
           retention-days: 30
-
-  bootstrap-notice:
-    needs: changes
-    if: needs.changes.outputs.bootstrap == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          marker="<!-- tf-plan:bootstrap -->"
-          {
-            echo "$marker"
-            cat <<'EOF'
-          ### ⚠️ `bootstrap` changed
-          CI never plans or applies `live/accounts/sandbox/_global/bootstrap`: it creates the CI roles. After merging,
-          an admin applies it by hand (README, "Setup from zero"). If other stacks depend on the change (new
-          permissions), apply bootstrap first.
-          EOF
-          } >body.md
-          id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)"
-          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@body.md >/dev/null
-          else gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi

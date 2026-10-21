@@ -37,6 +37,7 @@ variable "roles" {
     ssm_read_prefixes   = optional(list(string), [])
     secret_read_arns    = optional(list(string), []) # secret ARNs (wildcards allowed) this role may read
     managed_policy_arns = optional(list(string), [])
+    template_vars       = optional(map(string), {}) # per-role values for the policy template, over var.template_vars
   }))
 }
 
@@ -187,7 +188,7 @@ resource "aws_iam_role_policy" "service" {
 
   name   = "service"
   role   = aws_iam_role.this[each.key].id
-  policy = templatefile("${path.module}/policies/${each.value.policy_template}.json.tftpl", var.template_vars)
+  policy = templatefile("${path.module}/policies/${each.value.policy_template}.json.tftpl", merge(var.template_vars, each.value.template_vars))
 }
 
 resource "aws_iam_role_policy_attachment" "managed" {

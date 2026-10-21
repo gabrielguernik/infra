@@ -1,11 +1,12 @@
+# The same static checks as CI (terraform-pr.yml): fmt, validate, tflint, Trivy (HIGH/CRITICAL, .trivyignore.yaml).
 repos:
   - repo: https://github.com/antonbabenko/pre-commit-terraform
-    rev: v1.99.0
+    rev: 521ada54e82bdee23c6a1f42a83cd22898f1efd4 # frozen: v1.99.0
     hooks:
       - id: terraform_fmt
       - id: terraform_validate
         args: ["--hook-config=--retry-once-with-cleanup=true"]
       - id: terraform_tflint
-        args: ["--args=--config=__GIT_WORKING_DIR__/.tflint.hcl"]
-      - id: terraform_checkov
-        args: ["--args=--quiet"]
+        args: ["--args=--config=__GIT_WORKING_DIR__/.tflint.hcl", "--args=--minimum-failure-severity=warning"]
+      - id: terraform_trivy
+        args: ["--args=--severity=HIGH,CRITICAL", "--args=--ignorefile=__GIT_WORKING_DIR__/.trivyignore.yaml"]

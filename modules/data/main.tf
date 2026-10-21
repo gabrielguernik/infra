@@ -124,6 +124,12 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "rotation_generation" {
+  description = "Bump to rotate the generated secrets (JWT key, database role passwords) on the next apply."
+  type        = number
+  default     = 1
+}
+
 # --- Security groups ---------------------------------------------------------------
 
 data "aws_security_group" "source" {
@@ -295,8 +301,22 @@ resource "aws_elasticache_replication_group" "this" {
 }
 
 # --- Application secrets --------------------------------------------------------------
+# Generated passwords never enter the Terraform state: they are ephemeral (new on every run) and written to Secrets
+# Manager through write-only arguments, only when the secret's version number changes. The version is derived from the
+# secret's other contents, so a new endpoint (a rebuilt cache or database) rewrites the secret, and generates a new
+# password with it. To rotate by hand, bump rotation_generation.
+# The Valkey auth token is the exception: ElastiCache's auth_token is a regular argument, so it is in state.
 
-resource "random_password" "jwt" {
+locals {
+  # Secrets Manager wants a positive integer version; a hash of the non-generated contents gives one that changes
+  # with them.
+  version_of = { for k, v in {
+    app = jsonencode([var.rotation_generation, random_password.cache_auth.result, aws_elasticache_replication_group.this.primary_endpoint_address, aws_elasticache_replication_group.this.port])
+    db  = jsonencode([var.rotation_generation, aws_db_instance.this.address, aws_db_instance.this.port, aws_db_instance.this.db_name])
+  } : k => parseint(substr(sha256(v), 0, 8), 16) + 1 }
+}
+
+ephemeral "random_password" "jwt" {
   length  = 64
   special = false
 }
@@ -310,12 +330,13 @@ resource "aws_secretsmanager_secret" "app" {
 
 resource "aws_secretsmanager_secret_version" "app" {
   secret_id = aws_secretsmanager_secret.app.id
-  secret_string = jsonencode({
-    JWT_SECRET       = random_password.jwt.result
+  secret_string_wo = jsonencode({
+    JWT_SECRET       = ephemeral.random_password.jwt.result
     REDIS_AUTH_TOKEN = random_password.cache_auth.result
     REDIS_HOST       = aws_elasticache_replication_group.this.primary_endpoint_address
     REDIS_PORT       = tostring(aws_elasticache_replication_group.this.port)
   })
+  secret_string_wo_version = local.version_of["app"]
 }
 
 # --- Database roles -------------------------------------------------------------------
@@ -331,7 +352,7 @@ locals {
 }
 
 # Alphanumeric only, so the password can go into a connection URL without encoding.
-resource "random_password" "db_role" {
+ephemeral "random_password" "db_role" {
   for_each = local.db_roles
 
   length  = 40
@@ -350,13 +371,15 @@ resource "aws_secretsmanager_secret_version" "db_role" {
   for_each = local.db_roles
 
   secret_id = aws_secretsmanager_secret.db_role[each.key].id
-  secret_string = jsonencode({
+  secret_string_wo = jsonencode({
     username = each.value
-    password = random_password.db_role[each.key].result
+    password = ephemeral.random_password.db_role[each.key].result
     host     = aws_db_instance.this.address
     port     = tostring(aws_db_instance.this.port)
     dbname   = aws_db_instance.this.db_name
   })
+  # A new password must reach PostgreSQL too: the platform's db-bootstrap Job sets it on its next sync.
+  secret_string_wo_version = local.version_of["db"]
 }
 
 # --- Outputs --------------------------------------------------------------------------

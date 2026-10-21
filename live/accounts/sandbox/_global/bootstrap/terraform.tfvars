@@ -9,8 +9,13 @@ parent_domain   = "gg-incode.click"
 parent_zone_id  = "Z0129084A5AOP8NVXZQO"
 env             = "sandbox"
 
-# In apply order: CI applies affected stacks in this order (scripts/ci/stacks.py).
+# In apply order: CI applies affected stacks in this order (scripts/ci/stacks.py). bootstrap comes first: it creates
+# the roles and permissions the other stacks' CI runs use.
 stacks = {
+  bootstrap = {
+    state_prefix     = "accounts/sandbox/_global/bootstrap"
+    ssm_write_prefix = "/account/_global/bootstrap"
+  }
   shared-global = {
     state_prefix     = "shared/_global/shared-global"
     ssm_write_prefix = "/shared/_global/shared-global"
@@ -20,12 +25,10 @@ stacks = {
     ssm_write_prefix = "/shared/us-east-1/shared-regional"
   }
   account-baseline = {
-    state_prefix     = "accounts/sandbox/_global/account-baseline"
-    ssm_write_prefix = "/account/_global/account-baseline"
+    state_prefix = "accounts/sandbox/_global/account-baseline"
   }
   regional-baseline = {
-    state_prefix     = "accounts/sandbox/us-east-1/regional-baseline"
-    ssm_write_prefix = "/account/us-east-1/regional-baseline"
+    state_prefix = "accounts/sandbox/us-east-1/regional-baseline"
   }
   dns = {
     state_prefix      = "envs/sandbox/_global/dns"

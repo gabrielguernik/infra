@@ -27,3 +27,9 @@ variable "node_min_size" {
   description = "Minimum system nodes."
   type        = number
 }
+
+variable "argocd_admin_password_version" {
+  description = "Version of the ArgoCD admin password; bump to generate and store a new one."
+  type        = number
+  default     = 1
+}
