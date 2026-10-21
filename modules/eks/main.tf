@@ -435,16 +435,19 @@ resource "aws_launch_template" "system" {
   EOT
   )
 
+  # The provider's default tags don't reach the instances and volumes the node group launches: copy them here.
   tag_specifications {
     resource_type = "instance"
-    tags          = { Name = "${var.name}-system" }
+    tags          = merge(data.aws_default_tags.this.tags, { Name = "${var.name}-system" })
   }
 
   tag_specifications {
     resource_type = "volume"
-    tags          = { Name = "${var.name}-system" }
+    tags          = merge(data.aws_default_tags.this.tags, { Name = "${var.name}-system" })
   }
 }
+
+data "aws_default_tags" "this" {}
 
 resource "aws_eks_node_group" "system" {
   cluster_name    = aws_eks_cluster.this.name

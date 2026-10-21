@@ -99,5 +99,12 @@ ${jsonencode({
       Action   = ["ssm:GetParameter", "ssm:GetParameters"]
       Resource = "arn:aws:ssm:${region}::parameter/aws/service/eks/*"
     },
+    {
+      # The ArgoCD admin password of this cluster.
+      Sid      = "ArgocdAdminSecret"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:*"]
+      Resource = "arn:aws:secretsmanager:${region}:${account_id}:secret:${env}/argocd/${cluster_name}/*"
+    },
   ]
 })}

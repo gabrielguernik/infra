@@ -27,6 +27,12 @@ variable "env" {
   type        = string
 }
 
+variable "grafana_password_version" {
+  description = "Version of the Grafana admin password; bump to generate and store a new one."
+  type        = number
+  default     = 1
+}
+
 variable "log_retention_days" {
   description = "Retention of the container log group."
   type        = number
@@ -84,7 +90,9 @@ resource "aws_cloudwatch_query_definition" "this" {
   query_string    = each.value.query
 }
 
-resource "random_password" "grafana_admin" {
+# Ephemeral, written through a write-only argument: the password never enters the Terraform state. Bump
+# grafana_password_version to rotate it.
+ephemeral "random_password" "grafana_admin" {
   length  = 32
   special = false
 }
@@ -98,10 +106,11 @@ resource "aws_secretsmanager_secret" "grafana" {
 
 resource "aws_secretsmanager_secret_version" "grafana" {
   secret_id = aws_secretsmanager_secret.grafana.id
-  secret_string = jsonencode({
+  secret_string_wo = jsonencode({
     admin-user     = "admin"
-    admin-password = random_password.grafana_admin.result
+    admin-password = ephemeral.random_password.grafana_admin.result
   })
+  secret_string_wo_version = var.grafana_password_version
 }
 
 output "workspace_id" {

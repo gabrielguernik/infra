@@ -39,3 +39,23 @@ module "outputs" {
     node_role_arn     = module.eks.node_role_arn
   }
 }
+
+# ArgoCD's admin password, generated here because ArgoCD runs on this cluster. Ephemeral and written through a
+# write-only argument, so it never enters the state. The gitops install pipeline (role ci/argocd-<cluster>, which reads
+# <env>/argocd/*) sets it as ArgoCD's admin password. Bump argocd_admin_password_version to rotate it.
+ephemeral "random_password" "argocd_admin" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "argocd_admin" {
+  name                    = "${var.env}/argocd/${local.name}/admin"
+  description             = "ArgoCD admin password of cluster ${local.name} (set by the gitops install pipeline)"
+  recovery_window_in_days = 0 # sandbox is destroyed and rebuilt
+}
+
+resource "aws_secretsmanager_secret_version" "argocd_admin" {
+  secret_id                = aws_secretsmanager_secret.argocd_admin.id
+  secret_string_wo         = ephemeral.random_password.argocd_admin.result
+  secret_string_wo_version = var.argocd_admin_password_version
+}
