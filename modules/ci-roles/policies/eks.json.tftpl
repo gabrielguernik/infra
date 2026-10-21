@@ -100,6 +100,15 @@ ${jsonencode({
       Resource = "arn:aws:ssm:${region}::parameter/aws/service/eks/*"
     },
     {
+      # Changing the node group's launch template: EKS checks that the caller may launch instances from it. Only
+      # launches that use a launch template of this account; EKS itself starts the nodes.
+      Sid       = "NodeGroupLaunchTemplate"
+      Effect    = "Allow"
+      Action    = ["ec2:RunInstances"]
+      Resource  = "*"
+      Condition = { ArnLike = { "ec2:LaunchTemplate" = "arn:aws:ec2:${region}:${account_id}:launch-template/*" } }
+    },
+    {
       # The ArgoCD admin password of this cluster.
       Sid      = "ArgocdAdminSecret"
       Effect   = "Allow"
