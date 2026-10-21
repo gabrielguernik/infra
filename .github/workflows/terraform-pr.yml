@@ -136,6 +136,7 @@ jobs:
         with:
           name: pr-plan-${{ matrix.stack }}
           path: .tf-ci/${{ matrix.stack }}/changes.json # resource addresses and actions only; no values
+          include-hidden-files: true # .tf-ci is a dot folder; the default skips it in globs
           retention-days: 30
 
   bootstrap-notice:
