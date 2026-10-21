@@ -90,5 +90,8 @@ and re-render with Docker (`docs/architecture/README.md`); commit the PNGs.
   monitoring, `argocd_admin_password_version` in eks) and apply. Then force-sync the db-bootstrap ExternalSecret,
   sync the `db-bootstrap` Application in ArgoCD, and force-sync the realworld ExternalSecrets
   (annotation `force-sync=<timestamp>`). Reloader restarts the pods.
+- **`eval "$(scripts/eks-tunnel.sh ...)"` hides a failed tunnel** (eval of empty output returns 0), and the next
+  `kubectl` then uses the default kubeconfig. Use `out=$(scripts/eks-tunnel.sh ...) && eval "$out"`, and pass
+  `--context <cluster>` to anything that changes the cluster.
 - **Destroy:** delete the gitops `apps` root and ApplicationSet first and wait until no `k8s-*` ALB exists. Otherwise
   the ALB's network interfaces block subnet and SG deletion (docs/operations.md).
