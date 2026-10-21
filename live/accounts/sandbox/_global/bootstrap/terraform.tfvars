@@ -59,12 +59,10 @@ stacks = {
     state_prefix      = "envs/sandbox/us-east-1/data"
     ssm_write_prefix  = "/sandbox/us-east-1/data"
     ssm_read_prefixes = ["/sandbox/us-east-1/network"]
-    plan_secrets      = ["sandbox/realworld/*"]
   }
   monitoring = {
     state_prefix     = "envs/sandbox/us-east-1/monitoring"
     ssm_write_prefix = "/sandbox/us-east-1/monitoring"
-    plan_secrets     = ["sandbox/monitoring/*"]
   }
   platform = {
     state_prefix      = "envs/sandbox/us-east-1/platform"

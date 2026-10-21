@@ -481,7 +481,7 @@ GitHub Actions authenticates through OIDC. There are no long-lived keys.
 | Role | Trusted subjects | Can do |
 |---|---|---|
 | `ci/tf-<stack>` | `repo:gabrielguernik/infra`, GitHub environment `sandbox` only (the apply job; deployment branch `main`) | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl`. For `tf-bootstrap`: all of IAM under `role/ci/`, the GitHub OIDC provider and the state bucket's configuration, which makes it effectively admin |
-| `ci/tf-<stack>-plan` | `repo:gabrielguernik/infra` on `main` and pull requests | Read-only: AWS `ReadOnlyAccess` (which includes every SSM parameter), its own state prefix read-only, and the values of the secrets the stack manages (`plan_secrets`: `data`, `monitoring`), which refresh reads |
+| `ci/tf-<stack>-plan` | `repo:gabrielguernik/infra` on `main` and pull requests | Read-only: AWS `ReadOnlyAccess` (which includes every SSM parameter), its own state prefix read-only. No secret values: generated secrets are write-only, and refreshing them only lists their versions |
 | `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the `realworld-api` ECR repo |
 | `ci/argocd-<cluster>` | `repo:gabrielguernik/gitops`, GitHub environment `<cluster>` only | Port forwarding through the bastion to the cluster API, `eks:DescribeCluster`, read `<env>/argocd/*` secrets; cluster-admin access entry in `eks` |
 | `ci/gitops-check` | `repo:gabrielguernik/gitops` on `main` and pull requests | Read-only: describe the VPCs, security groups, IRSA roles, secret metadata, RDS instances, certificates, AMP workspaces and log groups that gitops references |
