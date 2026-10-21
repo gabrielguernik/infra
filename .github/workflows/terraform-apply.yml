@@ -160,7 +160,8 @@ jobs:
           name: reviewed-plans
           path: .tf-ci/*/changes.json # resource addresses and actions only; no values
           retention-days: 7
-          if-no-files-found: ignore
+          include-hidden-files: true # .tf-ci is a dot folder; the default skips it
+          if-no-files-found: error
 
   apply:
     needs: plan
