@@ -20,5 +20,6 @@ One /16 per environment and region, from 10.0.0.0/8. Blocks never overlap, so an
 
 The app subnets are large because the VPC CNI gives every pod an IP from the subnet: about 8,000 addresses per AZ.
 10.10.128.0/17 is left free for a second app range or for custom pod networking.
+For a large scale production system, extra ranges could be added by adding another /16 CIDR range to the VPC.
 
 The account is limited to us-east-1 by an organization SCP, so the plan starts there instead of eu-west-1.

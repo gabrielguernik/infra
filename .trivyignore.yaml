@@ -1,5 +1,5 @@
 # Trivy misconfiguration findings accepted on purpose (HIGH/CRITICAL; CI fails on any other).
-# Each entry says why; README "Known gaps" and "Security notes" list the production follow-ups.
+# Each entry says why; the production follow-ups are in the README, "Not implemented".
 misconfigurations:
   - id: AWS-0104 # security group allows unrestricted egress
     paths:
@@ -21,5 +21,4 @@ misconfigurations:
       - modules/log-archive/main.tf
       - modules/tf-state-backend/main.tf
     statement: >-
-      SSE-S3 is used on purpose (README "Security notes"); customer managed KMS keys per environment are a documented
-      prod upgrade.
+      SSE-S3 is used on purpose; customer managed KMS keys per environment are a documented prod upgrade.

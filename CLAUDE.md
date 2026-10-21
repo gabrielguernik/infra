@@ -29,7 +29,7 @@ Guidance for coding agents working in this repo. Humans: start with the [README]
 - **Providers** set `allowed_account_ids` and `default_tags` with `Project`, `Environment = var.env`,
   `Region = var.region`, `Stack`, `ManagedBy`, `Repo`. Use `var.env` and `var.region`; don't hardcode them.
 - **Terraform version** is in `.terraform-version` (1.16.6). After changing a provider version, lock for CI's platform
-  too, or CI's `init -lockfile=readonly` fails:
+  too, or CI's `init -lockfile=readonly` fails. After `terraform -chdir=<stack> init`:
   `terraform -chdir=<stack> providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64`.
 - **Generated secrets never enter state.** Use an `ephemeral "random_password"` with `secret_string_wo` and
   `secret_string_wo_version`. The version is a hash of the non-secret content plus a `rotation_generation`-style
@@ -58,13 +58,13 @@ A stack's CI runs only when its own folder or a module it calls (transitively) c
 ```bash
 terraform fmt -recursive -check
 tflint --init && tflint --recursive --minimum-failure-severity=warning
-trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml .
+trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-files '**/tfplan' .
 actionlint                                   # after editing workflows
 pre-commit run -a                            # the same checks, from .pre-commit-config.yaml
 TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=965140467182 scripts/ci/tf.sh plan <stack>   # CI's plan, with your credentials
 ```
 
-Accepted Trivy findings go in `.trivyignore.yaml` with a reason. Diagrams: edit `docs/architecture/architecture.py`
+Needs `tflint`, `trivy`, `actionlint` and `pre-commit` installed. Accepted Trivy findings go in `.trivyignore.yaml` with a reason. Diagrams: edit `docs/architecture/architecture.py`
 and re-render with Docker (`docs/architecture/README.md`); commit the PNGs.
 
 ## Pitfalls already paid for
@@ -90,5 +90,8 @@ and re-render with Docker (`docs/architecture/README.md`); commit the PNGs.
   monitoring, `argocd_admin_password_version` in eks) and apply. Then force-sync the db-bootstrap ExternalSecret,
   sync the `db-bootstrap` Application in ArgoCD, and force-sync the realworld ExternalSecrets
   (annotation `force-sync=<timestamp>`). Reloader restarts the pods.
+- **`eval "$(scripts/eks-tunnel.sh ...)"` hides a failed tunnel** (eval of empty output returns 0), and the next
+  `kubectl` then uses the default kubeconfig. Use `out=$(scripts/eks-tunnel.sh ...) && eval "$out"`, and pass
+  `--context <cluster>` to anything that changes the cluster.
 - **Destroy:** delete the gitops `apps` root and ApplicationSet first and wait until no `k8s-*` ALB exists. Otherwise
   the ALB's network interfaces block subnet and SG deletion (docs/operations.md).

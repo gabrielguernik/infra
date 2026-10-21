@@ -3,6 +3,9 @@
 *.tfstate.*
 *.tfplan
 tfplan
+.tf-ci/
+# created by pre-commit's terraform validate in module folders
+modules/*/.terraform.lock.hcl
 crash.log
 crash.*.log
 override.tf

@@ -66,12 +66,12 @@ First remove the apps, so the controllers delete what they created outside Terra
 DNS records). Otherwise the ALB's network interfaces block deleting the subnets and `sg-alb`. From the gitops repo:
 
 ```bash
-eval "$(scripts/eks-tunnel.sh sandbox us-east-1)"
-kubectl -n argocd delete application apps          # the root first, or it recreates the ApplicationSet
-kubectl -n argocd delete applicationset apps        # Applications → Ingress → ALB and DNS records
-kubectl -n argocd wait --for=delete application/realworld --timeout=5m
+out=$(scripts/eks-tunnel.sh sandbox us-east-1) && eval "$out"   # stops here if the tunnel fails
+kubectl --context sandbox-us-east-1 -n argocd delete application apps        # the root first, or it recreates the ApplicationSet
+kubectl --context sandbox-us-east-1 -n argocd delete applicationset apps     # Applications → Ingress → ALB and DNS records
+kubectl --context sandbox-us-east-1 -n argocd wait --for=delete application/realworld --timeout=5m
 aws elbv2 describe-load-balancers --query "LoadBalancers[?starts_with(LoadBalancerName, 'k8s-')].LoadBalancerName"  # []
-kill "$TUNNEL_PID"
+kill -INT "$TUNNEL_PID"
 ```
 
 Then, from this repo:
@@ -235,7 +235,7 @@ docker run --rm -e REDISCLI_AUTH -v "$PWD/AmazonRootCA1.pem:/ca.pem:ro" valkey/v
 | kubectl `x509: certificate is valid for …, not localhost` | `--tls-server-name` is missing: redo step 3b. |
 | kubectl `Unauthorized` / `the server has asked for the client to provide credentials` | Your IAM identity has no EKS access entry, or `AWS_PROFILE` differs from the one used for `update-kubeconfig`. |
 | kubectl hangs or `connection refused` on 8443 | The tunnel isn't running, timed out, or its connection dropped (the tunnel terminal shows `broken pipe` but the process keeps running and accepting connections). Stop it with `Ctrl-C` and redo step 3a. |
-| Tunnel opens but every connection logs `Connection to destination port failed` | Abandoned sessions (closed laptops, killed terminals) stay open on the bastion and break new port forwards. List and end your sessions, then reopen the tunnel: `aws ssm describe-sessions --state Active --query 'Sessions[].SessionId' --output text \| xargs -n1 aws ssm terminate-session --session-id` |
+| Tunnel opens but every connection logs `Connection to destination port failed` | Abandoned sessions (closed laptops, killed terminals) stay open on the bastion and break new port forwards. List and end your own sessions, then reopen the tunnel: `aws ssm describe-sessions --state Active --filters "key=Owner,value=$(aws sts get-caller-identity --query Arn --output text)" --query 'Sessions[].SessionId' --output text \| xargs -n1 aws ssm terminate-session --session-id` |
 | valkey-cli `certificate verify failed` | That `valkey-cli` has no CA bundle (the official container image doesn't ship one): pass `--cacert AmazonRootCA1.pem`. |
 | psql `server certificate does not match host name` | Use `host=<real endpoint> hostaddr=127.0.0.1`, not `host=localhost`. |
 | Everything worked yesterday, nothing works today | The environment was destroyed between sessions. Apply it again, then repeat step 3b (new cluster endpoint). |
@@ -247,7 +247,7 @@ docker run --rm -e REDISCLI_AUTH -v "$PWD/AmazonRootCA1.pem:/ca.pem:ro" valkey/v
 From the gitops repo (Grafana is private, like the ArgoCD UI):
 
 ```bash
-eval "$(scripts/eks-tunnel.sh sandbox us-east-1)"
+out=$(scripts/eks-tunnel.sh sandbox us-east-1) && eval "$out"   # stops here if the tunnel fails
 kubectl -n monitoring port-forward svc/grafana 3000:80 &
 aws secretsmanager get-secret-value --secret-id sandbox/monitoring/grafana --query SecretString --output text | jq -r '."admin-password"'
 open http://localhost:3000                                 # user admin
