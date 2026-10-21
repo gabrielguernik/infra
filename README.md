@@ -4,6 +4,58 @@ Terraform for the RealWorld sandbox on AWS. The code is split into layered stack
 
 > Account 965140467182 is limited to **us-east-1** by an organization SCP, so every regional stack lives in us-east-1.
 
+## Architecture
+
+![Architecture of the sandbox environment](docs/architecture/architecture.png)
+
+Edges: **blue** is user traffic, **green** the app's and the platform's data flows (secrets, metrics, logs, images),
+**dashed gray** control (controllers managing AWS resources, ArgoCD pulling git), **dashed orange** delivery and access
+(GitHub Actions through OIDC roles, engineers through Session Manager). The diagram is code:
+[`docs/architecture`](docs/architecture/README.md).
+
+**App delivery** (realworld-app CI, gitops, ArgoCD):
+
+```mermaid
+flowchart LR
+  pr["PR to realworld-app"] -->|"lint, unit tests, API spec,<br/>Trivy scans, chart lint"| merge["merge to main"]
+  merge -->|"push realworld-api:&lt;sha&gt;<br/>and migrate-&lt;sha&gt; (OIDC)"| ecr[("ECR")]
+  merge -->|"set revision = &lt;sha&gt;<br/>(deploy key)"| cfg["gitops<br/>apps/config/realworld.yaml"]
+  cfg -->|"git pull"| argo["ArgoCD"]
+  argo -->|"wave -1 ExternalSecrets<br/>wave 0 migrate Job<br/>wave 1 Deployment"| ns["EKS · namespace realworld"]
+  ecr -->|"image pull"| ns
+```
+
+**Infrastructure delivery** (this repo; see "CI/CD (Terraform)"):
+
+```mermaid
+flowchart LR
+  pr["PR to infra"] --> static["fmt, validate,<br/>tflint, Trivy"]
+  pr --> plans["read-only plan of each<br/>affected stack<br/>(tf-&lt;stack&gt;-plan)"]
+  plans --> review["PR comments<br/>+ pr-plan artifacts"]
+  review -->|"review, merge"| main["plans on main"]
+  main --> same{"identical to the<br/>PR's plans?"}
+  same -->|"yes"| apply["apply in order with tf-&lt;stack&gt;<br/>(environment sandbox),<br/>re-plan and compare first"]
+  same -->|"no"| manual["a person reviews,<br/>runs it with apply=true"]
+  manual --> apply
+  apply --> tag["move tag<br/>applied/sandbox"]
+  drift["daily drift plan"] -->|"changes"| issue["issue labelled drift"]
+```
+
+**Secrets**: generated passwords never enter Terraform state; workloads read them through External Secrets.
+
+```mermaid
+flowchart LR
+  tf["Terraform: data, monitoring, eks<br/>ephemeral passwords,<br/>write-only (not in state)"] --> sm[("Secrets Manager")]
+  rds["RDS-managed<br/>master password"] --> sm
+  keys["ArgoCD deploy keys<br/>(created by hand)"] --> sm
+  sm -->|"External Secrets,<br/>IRSA per namespace"| k8s["Kubernetes Secrets"]
+  k8s --> boot["db-bootstrap Job (master):<br/>creates the DB roles,<br/>sets their passwords"]
+  k8s --> app["realworld-api (app role)<br/>migrate Job (migrator role)"]
+  k8s --> grafana["Grafana admin"]
+  sm -->|"install pipeline"| argo["ArgoCD admin password,<br/>repository credentials"]
+  k8s -.->|"Secret changed"| reloader["Reloader restarts the pods"]
+```
+
 ## Layout
 
 ```
@@ -16,7 +68,7 @@ live/      one folder per stack instance; backend, provider, module calls, SSM r
   envs/sandbox/_global/dns
   envs/sandbox/us-east-1/{network,bastion,edge,eks,data,monitoring,platform}
   envs/prod/...   stub tfvars showing the prod toggles; never applied
-docs/      cidr-plan.md
+docs/      cidr-plan.md; architecture/: the architecture diagram as code (architecture.py → architecture.png)
 scripts/   tunnel.sh: SSM port forwarding through the bastion; ci/: the Terraform workflows' logic
 .github/workflows/   terraform-pr, terraform-apply, terraform-drift
 ```
