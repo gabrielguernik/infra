@@ -32,7 +32,7 @@ ${jsonencode({
       Effect    = "Allow"
       Action    = ["ec2:CreateTags"]
       Resource  = "*"
-      Condition = { StringEquals = { "ec2:CreateAction" = ["RunInstances", "CreateSecurityGroup"] } }
+      Condition = { StringEquals = { "ec2:CreateAction" = ["RunInstances", "CreateSecurityGroup", "AuthorizeSecurityGroupEgress", "AuthorizeSecurityGroupIngress"] } }
     },
     {
       Sid    = "ManageOwnInstances"
