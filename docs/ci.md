@@ -42,7 +42,7 @@ workflow) with `apply: true`. `apply: false` only plans. With GitHub Team or Ent
 workflow applies it. Destroying a stack is never automated (see [operations.md](operations.md#destroy-order-environment-between-work-sessions)).
 
 **Provider upgrades:** CI inits with `-lockfile=readonly`, so each `.terraform.lock.hcl` must carry the checksums of
-the CI platform too. After changing a provider version, lock for every platform:
+the CI platform too. After changing a provider version, init the stack, then lock for every platform:
 `terraform -chdir=<stack> providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64`.
 
 **Local dry run** of the CI logic with your own credentials:

@@ -29,7 +29,7 @@ Guidance for coding agents working in this repo. Humans: start with the [README]
 - **Providers** set `allowed_account_ids` and `default_tags` with `Project`, `Environment = var.env`,
   `Region = var.region`, `Stack`, `ManagedBy`, `Repo`. Use `var.env` and `var.region`; don't hardcode them.
 - **Terraform version** is in `.terraform-version` (1.16.6). After changing a provider version, lock for CI's platform
-  too, or CI's `init -lockfile=readonly` fails:
+  too, or CI's `init -lockfile=readonly` fails. After `terraform -chdir=<stack> init`:
   `terraform -chdir=<stack> providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=darwin_amd64`.
 - **Generated secrets never enter state.** Use an `ephemeral "random_password"` with `secret_string_wo` and
   `secret_string_wo_version`. The version is a hash of the non-secret content plus a `rotation_generation`-style
@@ -58,13 +58,13 @@ A stack's CI runs only when its own folder or a module it calls (transitively) c
 ```bash
 terraform fmt -recursive -check
 tflint --init && tflint --recursive --minimum-failure-severity=warning
-trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml .
+trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-files '**/tfplan' .
 actionlint                                   # after editing workflows
 pre-commit run -a                            # the same checks, from .pre-commit-config.yaml
 TF_CI_SKIP_ASSUME=1 ACCOUNT_ID=965140467182 scripts/ci/tf.sh plan <stack>   # CI's plan, with your credentials
 ```
 
-Accepted Trivy findings go in `.trivyignore.yaml` with a reason. Diagrams: edit `docs/architecture/architecture.py`
+Needs `tflint`, `trivy`, `actionlint` and `pre-commit` installed. Accepted Trivy findings go in `.trivyignore.yaml` with a reason. Diagrams: edit `docs/architecture/architecture.py`
 and re-render with Docker (`docs/architecture/README.md`); commit the PNGs.
 
 ## Pitfalls already paid for

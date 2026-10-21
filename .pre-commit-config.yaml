@@ -8,5 +8,12 @@ repos:
         args: ["--hook-config=--retry-once-with-cleanup=true"]
       - id: terraform_tflint
         args: ["--args=--config=__GIT_WORKING_DIR__/.tflint.hcl", "--args=--minimum-failure-severity=warning"]
-      - id: terraform_trivy
-        args: ["--args=--severity=HIGH,CRITICAL", "--args=--ignorefile=__GIT_WORKING_DIR__/.trivyignore.yaml"]
+  # Trivy runs once from the repo root, like CI: .trivyignore.yaml matches paths from the root, which the
+  # per-directory terraform_trivy hook can't do. Needs trivy installed.
+  - repo: local
+    hooks:
+      - id: trivy-config
+        name: Trivy config scan
+        language: system
+        pass_filenames: false
+        entry: trivy config --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml --skip-files '**/tfplan' --exit-code 1 --quiet .
