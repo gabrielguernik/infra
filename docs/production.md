@@ -121,14 +121,16 @@ The sandbox keeps observability small on purpose. A production setup adds:
   - SLO burn-rate alerts instead of fixed thresholds.
 - **Platform metrics.** node-exporter, kube-state-metrics, cAdvisor, ArgoCD, the controllers and postgres-exporter, scraped
   by the same Alloy into the same workspace.
-- **Logs in a centralized log system such as Loki** (shipped by Alloy), shared by all clusters and linked to metrics in
+- **Logs in Loki** (shipped by Alloy), shared by all clusters and linked to metrics in
   Grafana, instead of CloudWatch Logs.
 - **An easier way to manage dashboards.** Today a change means editing in the UI, exporting the JSON, committing it,
   tagging a chart version and bumping each cluster, and dashboard JSON is hard to review. Options:
   - the Grafana Operator, with dashboards, folders and data sources as Kubernetes resources;
   - dashboards written as code (Grafonnet/Jsonnet or the Grafana Foundation SDK), so reviews are readable;
   - a central Grafana that syncs UI edits back to Git.
-- **Tracing** with OpenTelemetry to Tempo or X-Ray.
+- **Distributed tracing with Tempo.** The API instrumented with the OpenTelemetry Node SDK (HTTP, Express and Prisma
+  spans), sent to Alloy, which forwards them to Tempo (object storage in S3). Grafana links traces to logs by trace ID
+  (logged next to `reqId`) and to metrics through exemplars.
 
 ## Terraform CI/CD
 

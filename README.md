@@ -187,6 +187,9 @@ outages the app never sees), and **p95 latency above 500 ms**. Both were verifie
   alerts are only visible in Grafana.
 - **Platform alerts and metrics:** nodes, pods, ArgoCD, External Secrets, RDS, Valkey, certificates.
 - **Grafana outside the cluster it watches** (Amazon Managed Grafana or a management cluster).
+- **Loki as log storage,** shared by all clusters and linked to metrics in Grafana, instead of CloudWatch Logs.
+- **Distributed tracing with Tempo:** the app instrumented with OpenTelemetry, traces sent through Alloy, and linked
+  to logs (request ID) and metrics in Grafana.
 - **Audit and detection:** CloudTrail, GuardDuty and Security Hub, organization-wide.
 - **WAF** on the ALB: the `edge` module supports it (`enable_waf`), off here for cost.
 - **Automatic secret rotation** (Secrets Manager rotation with alternating users) and the Valkey auth token out of
@@ -204,7 +207,7 @@ outages the app never sees), and **p95 latency above 500 ms**. Both were verifie
   read a changed output are re-planned automatically.
 - **Policy as code and cost estimates** on every plan (OPA/Conftest, Infracost).
 - **Renovate** for provider, module and action updates; `terraform test` for modules; versioned modules in a registry.
-- **Centralized logs** (Loki), **tracing** (OpenTelemetry) and **dashboards as code** (Grafana Operator or Grafonnet).
+- **Dashboards as code** (Grafana Operator or Grafonnet).
 - **Drift alerts** to chat or the on-call tool instead of a GitHub issue.
 - **Log archive storage classes** (Standard-IA, then Glacier IR) once volumes justify it, and S3 access logging on the
   bucket itself.
