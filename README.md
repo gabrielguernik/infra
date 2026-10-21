@@ -6,12 +6,22 @@ Terraform for the RealWorld sandbox on AWS. The code is split into layered stack
 
 ## Architecture
 
-![Architecture of the sandbox environment](docs/architecture/architecture.png)
+Three pictures, one concern each. They are code: [`docs/architecture`](docs/architecture/README.md).
 
-Edges: **blue** is user traffic, **green** the app's and the platform's data flows (secrets, metrics, logs, images),
-**dashed gray** control (controllers managing AWS resources, ArgoCD pulling git), **dashed orange** delivery and access
-(GitHub Actions through OIDC roles, engineers through Session Manager). The diagram is code:
-[`docs/architecture`](docs/architecture/README.md).
+**Request path:** API clients resolve the delegated sandbox zone, then reach the ALB in the public subnets. The ALB
+forwards `/api` to the API pods in EKS (private-app subnets), which connect over TLS to PostgreSQL and Valkey in the
+private-data subnets (no internet route).
+
+![Request path](docs/architecture/request-path.png)
+
+**Platform:** what runs in the cluster and which AWS services it uses. Each component that calls AWS has its own IRSA role.
+
+![Platform](docs/architecture/platform.png)
+
+**Delivery and access:** CI uses GitHub OIDC roles, never static keys. People and the ArgoCD install pipeline reach
+private endpoints through Session Manager port forwarding on a bastion with no inbound rules.
+
+![Delivery and access](docs/architecture/delivery-access.png)
 
 **App delivery** (realworld-app CI, gitops, ArgoCD):
 
@@ -68,7 +78,7 @@ live/      one folder per stack instance; backend, provider, module calls, SSM r
   envs/sandbox/_global/dns
   envs/sandbox/us-east-1/{network,bastion,edge,eks,data,monitoring,platform}
   envs/prod/...   stub tfvars showing the prod toggles; never applied
-docs/      cidr-plan.md; architecture/: the architecture diagram as code (architecture.py → architecture.png)
+docs/      cidr-plan.md; architecture/: the architecture diagrams as code (architecture.py → *.png)
 scripts/   tunnel.sh: SSM port forwarding through the bastion; ci/: the Terraform workflows' logic
 .github/workflows/   terraform-pr, terraform-apply, terraform-drift
 ```
