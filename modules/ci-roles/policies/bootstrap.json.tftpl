@@ -1,0 +1,41 @@
+${jsonencode({
+  Version = "2012-10-17"
+  Statement = [
+    {
+      # The CI roles: trust, inline policies, managed policy attachments, tags. Whoever can apply bootstrap can grant
+      # any CI role (itself included) any permission, so this role is effectively account admin: see the infra README.
+      Sid      = "CiRoles"
+      Effect   = "Allow"
+      Action   = ["iam:*"]
+      Resource = "arn:aws:iam::${account_id}:role/ci/*"
+    },
+    {
+      # Guard against lockout, not against abuse: the pipeline can't change who may assume it, or delete it. Those
+      # changes fail here and an admin applies them by hand.
+      Sid      = "NotOwnTrust"
+      Effect   = "Deny"
+      Action   = ["iam:UpdateAssumeRolePolicy", "iam:DeleteRole"]
+      Resource = "arn:aws:iam::${account_id}:role/ci/tf-bootstrap"
+    },
+    {
+      Sid      = "GithubOidcProvider"
+      Effect   = "Allow"
+      Action   = ["iam:*OpenIDConnectProvider*"]
+      Resource = "arn:aws:iam::${account_id}:oidc-provider/token.actions.githubusercontent.com"
+    },
+    {
+      Sid      = "IamRead"
+      Effect   = "Allow"
+      Action   = ["iam:Get*", "iam:List*"]
+      Resource = "*"
+    },
+    {
+      # The state bucket's own configuration and policy. Objects: only bootstrap's own prefix (base policy, and the
+      # bucket policy denies every other prefix to this role).
+      Sid      = "StateBucket"
+      Effect   = "Allow"
+      Action   = ["s3:*"]
+      Resource = "arn:aws:s3:::tfstate-${account_id}-${region}"
+    },
+  ]
+})}

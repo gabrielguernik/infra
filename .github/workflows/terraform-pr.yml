@@ -35,7 +35,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       stacks: ${{ steps.affected.outputs.stacks }}
-      bootstrap: ${{ steps.affected.outputs.bootstrap }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,8 +47,7 @@ jobs:
         run: |
           r="$(scripts/ci/stacks.py affected "$BASE" "$HEAD")"
           echo "stacks=$(jq -c .stacks <<<"$r")" >>"$GITHUB_OUTPUT"
-          echo "bootstrap=$(jq -r .bootstrap <<<"$r")" >>"$GITHUB_OUTPUT"
-          echo "Affected stacks: \`$(jq -c .stacks <<<"$r")\`, bootstrap changed: $(jq -r .bootstrap <<<"$r")" >>"$GITHUB_STEP_SUMMARY"
+          echo "Affected stacks: \`$(jq -c .stacks <<<"$r")\`" >>"$GITHUB_STEP_SUMMARY"
 
   static:
     runs-on: ubuntu-latest
@@ -144,29 +142,3 @@ jobs:
           path: .tf-ci/${{ matrix.stack }}/changes.json # resource addresses and actions only; no values
           include-hidden-files: true # .tf-ci is a dot folder; the default skips it in globs
           retention-days: 30
-
-  bootstrap-notice:
-    needs: changes
-    if: needs.changes.outputs.bootstrap == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          marker="<!-- tf-plan:bootstrap -->"
-          {
-            echo "$marker"
-            cat <<'EOF'
-          ### ⚠️ `bootstrap` changed
-          CI never plans or applies `live/accounts/sandbox/_global/bootstrap`: it creates the CI roles. After merging,
-          an admin applies it by hand (README, "Setup from zero"). If other stacks depend on the change (new
-          permissions), apply bootstrap first.
-          EOF
-          } >body.md
-          id="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -1)"
-          if [ -n "$id" ]; then gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@body.md >/dev/null
-          else gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md >/dev/null; fi

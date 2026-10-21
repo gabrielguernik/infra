@@ -61,7 +61,7 @@ Each provider sets `allowed_account_ids`, so a stack refuses to run against any 
 
 ### Apply order
 
-1. `live/accounts/sandbox/_global/bootstrap`: admin only, see below
+1. `live/accounts/sandbox/_global/bootstrap`: by hand only the first time (see "Setup from zero"), then by CI
 2. `live/shared/_global/shared-global`
 3. `live/shared/us-east-1/shared-regional`
 4. `live/accounts/sandbox/_global/account-baseline`
@@ -387,7 +387,9 @@ The sandbox keeps observability small on purpose. A production setup adds:
    terraform -chdir=$S init -migrate-state      # copies local state into the new bucket
    rm $S/terraform.tfstate*
    ```
-   CI never applies bootstrap: it creates the roles CI uses.
+   This first apply is manual because it creates the roles CI uses, `ci/tf-bootstrap` included. After it, CI plans
+   and applies bootstrap like any other stack. If a bootstrap change ever breaks `ci/tf-bootstrap` itself (its trust
+   can only be changed by an admin), apply it by hand the same way, without the backend steps.
 3. **GitHub environments** (repository settings, not in code), each with deployment branch `main` only: `sandbox` in
    `infra` (the only subject the `tf-<stack>` write roles trust), `sandbox-us-east-1` in `gitops` (the ArgoCD install
    role) and `sandbox` in `realworld-app` (the gitops deploy key). Removing that branch rule would let any branch
@@ -423,7 +425,10 @@ one skip its stacks.
 **Who can write.**
 - Pull requests only get the read-only `tf-<stack>-plan` roles, and plans run with `-lock=false`.
 - The write roles `tf-<stack>` trust only the GitHub environment `sandbox`, which only `main` can deploy to.
-- `bootstrap` is never run by CI. A PR that touches it gets a comment saying an admin must apply it.
+- `bootstrap` is applied by CI too, first in the apply order. Its write role `tf-bootstrap` can change every CI role,
+  itself included, so it is effectively account admin: merging a bootstrap change is an admin-level action. It can't
+  change its own trust policy or delete itself (an explicit deny), so a bad change fails instead of locking CI out.
+  Prod: required reviewers on its environment, or bootstrap in a separate management account and pipeline.
 
 **The approval is the PR review.** This repo's GitHub plan has no required reviewers for environments in private repos,
 so merging approves the plans shown in the PR comments. The apply refuses anything else:
@@ -475,7 +480,7 @@ GitHub Actions authenticates through OIDC. There are no long-lived keys.
 
 | Role | Trusted subjects | Can do |
 |---|---|---|
-| `ci/tf-<stack>` | `repo:gabrielguernik/infra`, GitHub environment `sandbox` only (the apply job; deployment branch `main`) | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl` |
+| `ci/tf-<stack>` | `repo:gabrielguernik/infra`, GitHub environment `sandbox` only (the apply job; deployment branch `main`) | Its own state prefix, its own SSM path, the SSM paths it reads, and the service actions in `modules/ci-roles/policies/<stack>.json.tftpl`. For `tf-bootstrap`: all of IAM under `role/ci/`, the GitHub OIDC provider and the state bucket's configuration, which makes it effectively admin |
 | `ci/tf-<stack>-plan` | `repo:gabrielguernik/infra` on `main` and pull requests | Read-only: AWS `ReadOnlyAccess` (which includes every SSM parameter), its own state prefix read-only, and the values of the secrets the stack manages (`plan_secrets`: `data`, `monitoring`), which refresh reads |
 | `ci/ci-build` | `repo:gabrielguernik/realworld-app` on `main` | Push to the `realworld-api` ECR repo |
 | `ci/argocd-<cluster>` | `repo:gabrielguernik/gitops`, GitHub environment `<cluster>` only | Port forwarding through the bastion to the cluster API, `eks:DescribeCluster`, read `<env>/argocd/*` secrets; cluster-admin access entry in `eks` |
@@ -669,6 +674,8 @@ account, and Multi-AZ (`rds_multi_az`).
 - Any pull request can assume the `tf-<stack>-plan` roles. Generated secrets are ephemeral and written through
   write-only arguments, so they are not in state and plans don't read their values, except the Valkey auth token,
   which is in the `data` state and so readable by `tf-data-plan`.
+- Anyone who can merge to `main` can, through a bootstrap change, give a CI role any permission: `tf-bootstrap` is
+  effectively admin and there are no required reviewers on this GitHub plan.
 - `tf-eks`, `tf-bastion` and `tf-platform` create IAM roles under their paths without a permissions boundary, so the
   apply job of those stacks could create a role with more rights than its own. Prod: a boundary required on every role
   they create.

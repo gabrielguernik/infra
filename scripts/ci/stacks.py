@@ -12,8 +12,7 @@ that creates each stack's CI roles and state prefix (state_prefix = the stack's 
 A stack is affected only when a file in its folder changes, or in a module it calls (modules/<name>, referenced by
 relative source, including modules those modules call). Stacks that read its SSM outputs are not: they pick up new
 values on their next change, and the daily drift plan reports them meanwhile. Changes to the CI itself (workflows,
-scripts/ci, .terraform-version) affect every stack. `affected` also reports "bootstrap": true when the bootstrap
-stack changed (CI never applies it).
+scripts/ci, .terraform-version) affect every stack. bootstrap is a stack like the others (it is in its own map).
 """
 import json
 import os
@@ -22,13 +21,13 @@ import subprocess
 import sys
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-BOOTSTRAP = "live/accounts/sandbox/_global/bootstrap"
+REGISTRY = "live/accounts/sandbox/_global/bootstrap/terraform.tfvars"
 GLOBAL_TRIGGERS = (".github/workflows/terraform-", "scripts/ci/", ".terraform-version")
 
 
 def stacks():
     """[(name, folder)] in the order of the tfvars `stacks` map (apply order)."""
-    text = open(os.path.join(ROOT, BOOTSTRAP, "terraform.tfvars")).read()
+    text = open(os.path.join(ROOT, REGISTRY)).read()
     block = re.search(r"^stacks\s*=\s*\{(.*?)^\}", text, re.S | re.M)
     if not block:
         sys.exit("no stacks map in bootstrap terraform.tfvars")
@@ -68,9 +67,7 @@ def affected(files):
             hit = any(f.startswith(f"modules/{m}/") for m in modules_of(folder) for f in files)
         if hit:
             result.append(name)
-    bootstrap = any(f.startswith(BOOTSTRAP + "/") for f in files) or any(
-        f.startswith(f"modules/{m}/") for m in modules_of(BOOTSTRAP) for f in files)
-    return {"stacks": result, "bootstrap": bootstrap}
+    return {"stacks": result}
 
 
 def changed_files(base, head):

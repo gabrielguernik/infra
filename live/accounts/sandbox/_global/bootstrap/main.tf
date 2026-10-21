@@ -1,5 +1,7 @@
-# Applied by an admin only, never by CI: it creates the roles CI uses.
-# First apply runs with local state; see README "Bootstrap" for the migration to S3.
+# The CI roles, the state bucket and the GitHub OIDC provider. Applied by CI like every other stack (role
+# ci/tf-bootstrap, first in apply order), except the very first apply: an admin runs it by hand with local state,
+# because the roles CI uses don't exist yet (README "Setup from zero"). ci/tf-bootstrap can rewrite any CI role, so
+# merging a bootstrap change is an admin-level action.
 
 locals {
   state_bucket_name = "tfstate-${var.account_id}-${var.region}"
