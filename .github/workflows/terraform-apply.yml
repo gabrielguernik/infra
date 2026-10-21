@@ -1,8 +1,8 @@
 # Merges to main: plan the affected stacks (read-only) and apply them in order, if what would be applied is exactly
 # what was reviewed.
 #
-#   plan   affected = stacks changed since the last successful apply (tag applied/sandbox), plus the stacks that read
-#          their SSM outputs. Read-only plans with ci/tf-<stack>-plan, shown in the run summary.
+#   plan   affected = stacks whose folder or modules changed since the last successful apply (tag applied/sandbox).
+#          Read-only plans with ci/tf-<stack>-plan, shown in the run summary.
 #          Approval: on a push, the merged PR's plans (artifacts pr-plan-<stack> of its terraform-pr run) are the
 #          reviewed plans. Every affected stack's plan here must match its PR plan; otherwise (no PR, a stack not
 #          planned in the PR, a different plan) nothing is applied, and someone reviews this run's plans and starts
@@ -189,8 +189,8 @@ jobs:
           STACKS: ${{ needs.plan.outputs.stacks }}
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          # Every affected stack, also the ones without changes in the reviewed plan: a consumer of an upstream stack
-          # applied just before may now have changes, which must stop the run rather than be skipped.
+          # Every affected stack, also the ones without changes in the reviewed plan: if the state changed since the
+          # review, the comparison stops the run rather than skipping it.
           for s in $(jq -r '.[]' <<<"$STACKS"); do
             scripts/ci/tf.sh apply "$s" reviewed
             n="$(jq '.resources | length' "reviewed/$s/changes.json")"

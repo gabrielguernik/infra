@@ -9,10 +9,10 @@ that creates each stack's CI roles and state prefix (state_prefix = the stack's 
   stacks.py affected-files <file>...  same, for a list of changed files
   stacks.py path <stack>              the stack's folder
 
-A stack is affected when a file in its folder changes, or in a module it calls (modules/<name>, referenced by relative
-source). Stacks that read an affected stack's SSM outputs (ssm_read_prefixes) are affected too, transitively: they
-are re-planned after it applies. Changes to the CI itself (workflows, scripts/ci, .terraform-version) affect every
-stack. `affected` also reports "bootstrap": true when the bootstrap stack changed (CI never applies it).
+A stack is affected only when a file in its folder changes, or in a module it calls (modules/<name>, referenced by
+relative source). Stacks that read its SSM outputs are not: they pick up new values on their next change, and the
+daily drift plan reports them meanwhile. Changes to the CI itself (workflows, scripts/ci, .terraform-version) affect
+every stack. `affected` also reports "bootstrap": true when the bootstrap stack changed (CI never applies it).
 """
 import json
 import os
@@ -25,8 +25,8 @@ BOOTSTRAP = "live/accounts/sandbox/_global/bootstrap"
 GLOBAL_TRIGGERS = (".github/workflows/terraform-", "scripts/ci/", ".terraform-version")
 
 
-def registry():
-    """[{name, folder, writes, reads}] in the order of the tfvars `stacks` map."""
+def stacks():
+    """[(name, folder)] in the order of the tfvars `stacks` map (apply order)."""
     text = open(os.path.join(ROOT, BOOTSTRAP, "terraform.tfvars")).read()
     block = re.search(r"^stacks\s*=\s*\{(.*?)^\}", text, re.S | re.M)
     if not block:
@@ -37,22 +37,10 @@ def registry():
         prefix = re.search(r'state_prefix\s*=\s*"([^"]+)"', body)
         if not prefix:
             sys.exit(f"stack {name} has no state_prefix")
-        writes = re.search(r'ssm_write_prefix\s*=\s*"([^"]+)"', body)
-        reads = re.search(r"ssm_read_prefixes\s*=\s*\[([^\]]*)\]", body)
-        result.append({
-            "name": name,
-            "folder": f"live/{prefix.group(1)}",
-            "writes": writes.group(1) if writes else None,
-            "reads": re.findall(r'"([^"]+)"', reads.group(1)) if reads else [],
-        })
+        result.append((name, f"live/{prefix.group(1)}"))
     if not result:
         sys.exit("stacks map is empty or unparsable")
     return result
-
-
-def stacks():
-    """[(name, folder)] in apply order."""
-    return [(s["name"], s["folder"]) for s in registry()]
 
 
 def modules_of(folder):
@@ -77,16 +65,6 @@ def affected(files):
             hit = any(f.startswith(f"modules/{m}/") for m in modules_of(folder) for f in files)
         if hit:
             result.append(name)
-    # Consumers of affected stacks' outputs, transitively (the registry is in apply order, so one pass suffices).
-    reg = registry()
-    for s in reg:
-        if s["name"] in result:
-            continue
-        producers = [p for p in reg if p["name"] in result and p["writes"]]
-        if any(p["writes"] in s["reads"] for p in producers):
-            result.append(s["name"])
-    order = [s["name"] for s in reg]
-    result.sort(key=order.index)
     bootstrap = any(f.startswith(BOOTSTRAP + "/") for f in files) or any(
         f.startswith(f"modules/{m}/") for m in modules_of(BOOTSTRAP) for f in files)
     return {"stacks": result, "bootstrap": bootstrap}

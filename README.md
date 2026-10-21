@@ -405,9 +405,10 @@ Three workflows in `.github/workflows/`, plain Terraform and official actions pi
 | `terraform-drift` | Daily 06:17 UTC; manual | Read-only plan of every stack. Drift or a failed plan fails the run and opens or updates the issue labelled `drift`; a clean run closes it. Stacks with empty state (environment torn down) count as "not deployed". |
 
 **Which stacks run.** The stack list and the apply order are the `stacks` map in `bootstrap/terraform.tfvars`, the
-same map that creates the roles. A stack is affected when its folder or a module it calls changes, and so are the stacks
-that read its SSM outputs, transitively: they're re-planned after it applies. A change to the CI itself plans
-everything. On `main`, "affected" is measured from the tag `applied/sandbox`, so a failed or skipped run can't make a later
+same map that creates the roles. A stack runs only when its own folder or a module it calls changes. Stacks that read its
+SSM outputs are not re-planned: they pick up a changed value on their next change, and until then the daily drift plan
+reports them. To roll a changed output out right away, run **terraform-apply** by hand with those stacks. A change to
+the CI itself plans everything. On `main`, "affected" is measured from the tag `applied/sandbox`, so a failed or skipped run can't make a later
 one skip its stacks.
 
 **Who can write.**
@@ -419,7 +420,6 @@ one skip its stacks.
 so merging approves the plans shown in the PR comments. The apply refuses anything else:
 - **No PR:** a direct push to `main` is planned, never applied.
 - **A stack the PR didn't plan, or a plan that changed** (main moved, the state changed): nothing is applied.
-- **A downstream stack whose plan changes because an upstream stack applied first in the same run:** the run stops there.
 
 In those cases, review the run's plans and start **terraform-apply** by hand (Actions → terraform-apply → Run
 workflow) with `apply: true`. `apply: false` only plans. With GitHub Team or Enterprise, add required reviewers to the
@@ -451,8 +451,8 @@ The pipeline stays small on purpose. A full production setup adds:
 - **Policy as code and cost** on every plan: OPA/Conftest checks on the plan JSON (no public buckets, tags present, no
   destroys of protected resources without a label), and Infracost comments.
 - **An orchestrator** once the stacks grow: Atlantis, Terramate, Spacelift, HCP Terraform or env0. They provide
-  dependency graphs, per-stack locks and queues, drift remediation and audit logs. Today's ordering is the `stacks` map and
-  the SSM consumer links; tag-based cross-stack references aren't modelled.
+  dependency graphs, per-stack locks and queues, drift remediation and audit logs. Today's ordering is the `stacks` map, and stacks that
+  consume a changed output aren't re-planned automatically.
 - **Runners:** self-hosted ephemeral runners inside the AWS network (Actions Runner Controller or CodeBuild), with
   network egress restricted (e.g. StepSecurity harden-runner); no public runners holding cloud credentials.
 - **Supply chain:** Renovate for provider, module and action updates, with plans in the PR; module tests (`terraform test`)
