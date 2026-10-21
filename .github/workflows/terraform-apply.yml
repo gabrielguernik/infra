@@ -1,0 +1,215 @@
+# Merges to main: plan the affected stacks (read-only) and apply them in order, if what would be applied is exactly
+# what was reviewed.
+#
+#   plan   affected = stacks whose folder or modules changed since the last successful apply (tag applied/sandbox).
+#          Read-only plans with ci/tf-<stack>-plan, shown in the run summary.
+#          Approval: on a push, the merged PR's plans (artifacts pr-plan-<stack> of its terraform-pr run) are the
+#          reviewed plans. Every affected stack's plan here must match its PR plan; otherwise (no PR, a stack not
+#          planned in the PR, a different plan) nothing is applied, and someone reviews this run's plans and starts
+#          the workflow by hand with apply=true. On a manual run, apply=true is the approval.
+#   apply  environment "sandbox" (deployment branch main; the only place ci/tf-<stack> trusts). For each affected
+#          stack, in apply order, with ci/tf-<stack>: plan again with the state lock, compare the resource changes with
+#          this run's plan, and apply only if identical. A difference (state changed meanwhile, or new outputs of an
+#          upstream stack applied just before) stops the run for a new review.
+#   tag    moves applied/sandbox to this commit once everything applied, so a failed, skipped or cancelled run can't
+#          make a later run skip its stacks.
+#
+# The GitHub plan of this repo has no required reviewers for environments in private repos. With GitHub Team or
+# Enterprise, add required reviewers to the "sandbox" environment: the apply job then also waits for a person.
+#
+# workflow_dispatch: stacks = "affected" (default), "all", or a space-separated list (a list doesn't move the tag);
+# apply = false (default) only plans.
+name: terraform-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "live/**"
+      - "modules/**"
+      - "scripts/ci/**"
+      - ".github/workflows/terraform-*.yml"
+      - ".terraform-version"
+  workflow_dispatch:
+    inputs:
+      stacks:
+        description: '"affected" (since the last apply), "all", or a space-separated list of stacks'
+        default: affected
+        required: true
+      apply:
+        description: "Apply after planning (you approve the plans of this run). false = plan only."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One apply at a time, queued, never cancelled mid-apply.
+concurrency:
+  group: terraform-sandbox
+  cancel-in-progress: false
+
+env:
+  ACCOUNT_ID: "965140467182"
+  AWS_REGION: us-east-1
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+  APPLIED_TAG: applied/sandbox
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC → ci/tf-<stack>-plan
+      actions: read # the merged PR's plan artifacts
+      pull-requests: read # which PR a commit came from
+    outputs:
+      stacks: ${{ steps.affected.outputs.stacks }}
+      changed: ${{ steps.plan.outputs.changed }}
+      move_tag: ${{ steps.affected.outputs.move_tag }}
+      approved: ${{ steps.approval.outputs.approved }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # history and tags: the diff since the last apply
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version_file: .terraform-version
+          terraform_wrapper: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: terraform-plugins-${{ hashFiles('**/.terraform.lock.hcl') }}
+      - id: affected
+        env:
+          INPUT: ${{ github.event.inputs.stacks || 'affected' }}
+        run: |
+          all="$(scripts/ci/stacks.py list)"
+          move_tag=true
+          case "$INPUT" in
+            affected)
+              if base="$(git rev-parse -q --verify "refs/tags/$APPLIED_TAG")"; then
+                stacks="$(scripts/ci/stacks.py affected "$base" HEAD | jq -c .stacks)"
+                echo "Affected since \`$APPLIED_TAG\` (${base:0:7}): \`$stacks\`" >>"$GITHUB_STEP_SUMMARY"
+              else
+                stacks="$all"
+                echo "No \`$APPLIED_TAG\` tag yet: planning every stack" >>"$GITHUB_STEP_SUMMARY"
+              fi ;;
+            all) stacks="$all" ;;
+            *)
+              move_tag=false
+              stacks="$(jq -nc --argjson all "$all" --arg in "$INPUT" '($in | split(" ") | map(select(. != ""))) as $want
+                | if ($want - $all | length) > 0 then error("unknown stacks: \($want - $all)") else [$all[] | select(. as $s | $want | index($s))] end')" ;;
+          esac
+          echo "stacks=$stacks" >>"$GITHUB_OUTPUT"
+          echo "move_tag=$move_tag" >>"$GITHUB_OUTPUT"
+      - id: plan
+        name: plan (read-only)
+        env:
+          STACKS: ${{ steps.affected.outputs.stacks }}
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          failed=0
+          for s in $(jq -r '.[]' <<<"$STACKS"); do
+            scripts/ci/tf.sh plan "$s" apply || failed=1
+            {
+              echo "### \`$s\`: $(cat ".tf-ci/$s/summary.txt")"
+              if [ "$(cat ".tf-ci/$s/status")" != no-changes ]; then
+                echo "<details><summary>plan</summary>"; echo; echo '```hcl'; head -c 150000 ".tf-ci/$s/plan.txt"; echo '```'; echo "</details>"
+              fi
+            } >>"$GITHUB_STEP_SUMMARY"
+          done
+          changed="$(for s in $(jq -r '.[]' <<<"$STACKS"); do [ "$(cat ".tf-ci/$s/status")" = changes ] && echo "$s"; done | jq -Rsc 'split("\n") | map(select(. != ""))')"
+          echo "changed=$changed" >>"$GITHUB_OUTPUT"
+          echo "**Stacks with changes:** \`$changed\`" >>"$GITHUB_STEP_SUMMARY"
+          exit $failed
+      - id: approval
+        name: approval (manual run, or plans identical to the merged PR's)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          APPLY: ${{ github.event.inputs.apply }}
+          STACKS: ${{ steps.affected.outputs.stacks }}
+          CHANGED: ${{ steps.plan.outputs.changed }}
+        run: |
+          approve() { echo "approved=$1" >>"$GITHUB_OUTPUT"; echo "**Apply:** $2" >>"$GITHUB_STEP_SUMMARY"; exit 0; }
+          [ "$CHANGED" = "[]" ] && approve false "nothing to apply."
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$APPLY" = true ]; then approve true "started by hand with apply=true."; fi
+            approve false "plan only (apply=false)."
+          fi
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty')"
+          [ -n "$pr" ] || approve false "**not applied**: $GITHUB_SHA didn't come from a merged pull request. Review this run's plans, then run the workflow with apply=true."
+          head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)"
+          run="$(gh run list --workflow terraform-pr.yml --commit "$head" --json databaseId,conclusion \
+            --jq '[.[] | select(.conclusion == "success")][0].databaseId // empty')"
+          [ -n "$run" ] || approve false "**not applied**: no successful terraform-pr run for PR #$pr at ${head:0:7}. Review this run's plans, then run the workflow with apply=true."
+          gh run download "$run" --pattern 'pr-plan-*' --dir pr-reviewed || true
+          for s in $(jq -r '.[]' <<<"$STACKS"); do
+            reviewed="pr-reviewed/pr-plan-$s/changes.json"
+            if [ ! -f "$reviewed" ]; then
+              approve false "**not applied**: \`$s\` wasn't planned in PR #$pr. Review this run's plans, then run the workflow with apply=true."
+            fi
+            if ! diff -u "$reviewed" ".tf-ci/$s/changes.json"; then
+              approve false "**not applied**: the plan of \`$s\` differs from the one reviewed in PR #$pr (diff in the log). Review this run's plans, then run the workflow with apply=true."
+            fi
+          done
+          approve true "plans identical to the ones reviewed in PR #$pr"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reviewed-plans
+          path: .tf-ci/*/changes.json # resource addresses and actions only; no values
+          retention-days: 7
+          if-no-files-found: ignore
+
+  apply:
+    needs: plan
+    if: needs.plan.outputs.changed != '[]' && needs.plan.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    environment: sandbox # deployment branch main; the only place ci/tf-<stack> trusts
+    permissions:
+      contents: read
+      id-token: write # OIDC → ci/tf-<stack>
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version_file: .terraform-version
+          terraform_wrapper: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: terraform-plugins-${{ hashFiles('**/.terraform.lock.hcl') }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: reviewed-plans
+          path: reviewed
+      - name: apply in order
+        env:
+          STACKS: ${{ needs.plan.outputs.stacks }}
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          # Every affected stack, also the ones without changes in the reviewed plan: if the state changed since the
+          # review, the comparison stops the run rather than skipping it.
+          for s in $(jq -r '.[]' <<<"$STACKS"); do
+            scripts/ci/tf.sh apply "$s" reviewed
+            n="$(jq '.resources | length' "reviewed/$s/changes.json")"
+            echo "- \`$s\`: done, $n resource change(s)" >>"$GITHUB_STEP_SUMMARY"
+          done
+
+  tag:
+    needs: [plan, apply]
+    # Applied everything, or there was nothing to apply. Not when the apply was skipped for lack of approval.
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.move_tag == 'true'
+      && (needs.apply.result == 'success' || (needs.apply.result == 'skipped' && needs.plan.outputs.changed == '[]'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # move the applied/sandbox tag
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: move ${{ env.APPLIED_TAG }}
+        run: |
+          git tag -f "$APPLIED_TAG" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$APPLIED_TAG"
+          echo "\`$APPLIED_TAG\` → ${GITHUB_SHA:0:7}" >>"$GITHUB_STEP_SUMMARY"

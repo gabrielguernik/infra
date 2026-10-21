@@ -1,0 +1,95 @@
+# Daily drift check: a read-only plan of every stack (ci/tf-<stack>-plan, -lock=false). Any difference between the
+# code on main and AWS (a console change, a failed apply, an upstream output that changed) is drift.
+#
+# Drift or a failed plan: the run fails (GitHub emails the failure) and one open issue labelled "drift" is created or
+# updated with the report. A clean run closes it. Stacks with an empty state count as "not deployed", not as drift,
+# so a sandbox that is torn down between work sessions doesn't raise issues.
+name: terraform-drift
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Not the apply group: a pending drift run must never replace a pending apply.
+concurrency:
+  group: terraform-drift
+  cancel-in-progress: true
+
+env:
+  ACCOUNT_ID: "965140467182"
+  AWS_REGION: us-east-1
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC → ci/tf-<stack>-plan
+      issues: write # the drift issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version_file: .terraform-version
+          terraform_wrapper: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: terraform-plugins-${{ hashFiles('**/.terraform.lock.hcl') }}
+      - name: plan every stack
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          for s in $(scripts/ci/stacks.py list | jq -r '.[]'); do
+            scripts/ci/tf.sh plan "$s" drift || true # failures are reported below
+          done
+      - name: report
+        id: report
+        run: |
+          drift=0; failed=0; deployed=0
+          {
+            echo "Drift check of \`main\` (${GITHUB_SHA:0:7}), $(date -u +'%Y-%m-%d %H:%M UTC'), [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo; echo "| Stack | Result |"; echo "|---|---|"
+            for s in $(scripts/ci/stacks.py list | jq -r '.[]'); do
+              st="$(cat ".tf-ci/$s/status" 2>/dev/null || echo failed)"
+              case "$st" in changes) drift=$((drift+1)); deployed=1;; failed) failed=$((failed+1));; no-changes) deployed=1;; esac
+              echo "| \`$s\` | $(cat ".tf-ci/$s/summary.txt" 2>/dev/null || echo "plan failed") |"
+            done
+            echo
+            for s in $(scripts/ci/stacks.py list | jq -r '.[]'); do
+              if [ "$(cat ".tf-ci/$s/status" 2>/dev/null)" = changes ] || [ "$(cat ".tf-ci/$s/status" 2>/dev/null)" = failed ]; then
+                echo "<details><summary><code>$s</code></summary>"; echo; echo '```hcl'; head -c 8000 ".tf-ci/$s/plan.txt" 2>/dev/null; echo '```'; echo "</details>"
+              fi
+            done
+            echo
+            echo "To fix: apply the code (re-run terraform-apply for the stack), or bring the code in line with the change."
+          } >report.md
+          cat report.md >>"$GITHUB_STEP_SUMMARY"
+          { echo "drift=$drift"; echo "failed=$failed"; echo "deployed=$deployed"; } >>"$GITHUB_OUTPUT"
+      - name: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRIFT: ${{ steps.report.outputs.drift }}
+          FAILED: ${{ steps.report.outputs.failed }}
+          DEPLOYED: ${{ steps.report.outputs.deployed }}
+        run: |
+          gh label create drift --color B60205 --description "Terraform drift detected by terraform-drift" --force >/dev/null
+          issue="$(gh issue list --label drift --state open --json number --jq '.[0].number // empty')"
+          if [ "$DRIFT" -gt 0 ] || [ "$FAILED" -gt 0 ]; then
+            if [ -n "$issue" ]; then
+              gh issue edit "$issue" --body-file report.md >/dev/null
+              gh issue comment "$issue" --body "Still drifting: $DRIFT stack(s) with changes, $FAILED failed plan(s). Report updated." >/dev/null
+            else
+              gh issue create --label drift --title "Terraform drift in sandbox" --body-file report.md >/dev/null
+            fi
+            echo "::error::drift in $DRIFT stack(s), $FAILED failed plan(s): see the drift issue"
+            exit 1
+          fi
+          if [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "No drift as of ${GITHUB_SHA:0:7} ($( [ "$DEPLOYED" = 1 ] && echo "all deployed stacks match the code" || echo "environment not deployed" ))." >/dev/null
+          fi
+          [ "$DEPLOYED" = 1 ] || echo "::notice::environment not deployed: every stack has an empty state"

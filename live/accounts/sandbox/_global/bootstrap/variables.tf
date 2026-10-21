@@ -65,12 +65,15 @@ variable "env" {
 
 variable "stacks" {
   description = <<-EOT
-    Terraform stacks that get a CI role (tf-<name>). state_prefix is the stack's folder under live/,
-    ssm_write_prefix its own SSM path, ssm_read_prefixes the SSM paths it consumes.
+    Terraform stacks that get CI roles (tf-<name> and tf-<name>-plan), in apply order: the Terraform workflows read
+    this map (scripts/ci/stacks.py) for the stack list and the order. state_prefix is the stack's folder under live/,
+    ssm_write_prefix its own SSM path, ssm_read_prefixes the SSM paths it consumes, plan_secrets the secrets
+    (name patterns) whose values a plan reads when refreshing secret versions.
   EOT
   type = map(object({
     state_prefix      = string
     ssm_write_prefix  = string
     ssm_read_prefixes = optional(list(string), [])
+    plan_secrets      = optional(list(string), [])
   }))
 }
