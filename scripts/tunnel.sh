@@ -20,10 +20,12 @@ usage() {
 }
 
 param() {
-  aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || {
-    echo "error: SSM parameter $1 not found; is the stack that publishes it applied?" >&2
+  local out
+  out="$(aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>&1)" || {
+    echo "error: can't read SSM parameter $1 (is the stack that publishes it applied?): $out" >&2
     exit 1
   }
+  echo "$out"
 }
 
 target="${1:-}"

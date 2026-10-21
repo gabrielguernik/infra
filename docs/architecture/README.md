@@ -9,7 +9,7 @@ Render without installing anything locally (Docker image with Python, Graphviz a
 ```bash
 cd docs/architecture
 docker build -q -t infra-diagrams .
-docker run --rm -v "$PWD:/work" infra-diagrams      # writes the three PNGs
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" infra-diagrams      # writes the three PNGs
 ```
 
 The flow diagrams (app delivery, infrastructure delivery, secrets) are Mermaid blocks in the repository README;

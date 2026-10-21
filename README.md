@@ -192,6 +192,10 @@ outages the app never sees), and **p95 latency above 500 ms**. Both were verifie
 - **Instrumentation outside the application,** with the OpenTelemetry Operator: an `Instrumentation` resource and a pod
   annotation inject Node auto-instrumentation (traces and metrics) at deploy time. The app's in-code metrics move
   out, so every service gets the same telemetry with no code changes or SDK upgrades in each repo.
+- **Egress filtering:** AWS Network Firewall or an egress proxy with an allow-list. Today security groups allow
+  outbound traffic to anywhere for the bastion, the ALB and the nodes.
+- **Customer managed KMS keys** per environment for EKS secrets, S3 (state, log archive), RDS and ElastiCache,
+  instead of AWS managed keys.
 - **Audit and detection:** CloudTrail, GuardDuty and Security Hub, organization-wide.
 - **WAF** on the ALB: the `edge` module supports it (`enable_waf`), off here for cost.
 - **Automatic secret rotation** (Secrets Manager rotation with alternating users) and the Valkey auth token out of
